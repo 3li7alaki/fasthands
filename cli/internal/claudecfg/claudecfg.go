@@ -13,6 +13,7 @@ import (
 	"regexp"
 
 	"fasthands/internal/credstore"
+	"fasthands/internal/statehome"
 )
 
 type Capture struct {
@@ -119,23 +120,13 @@ func Read(platform, securityPath string) (Capture, error) {
 	if err != nil {
 		return Capture{}, err
 	}
-	path := loc.CredentialsFile
-	source := path
-	var blob []byte
-	if platform == "darwin" {
-		blob, err = (credstore.Keychain{SecurityPath: securityPath}).Read(loc.KeychainAccount, loc.Service)
-		if err != nil && !errors.Is(err, credstore.ErrAbsent) {
-			return Capture{}, err
-		}
-		if err == nil {
-			source = "Keychain service " + loc.Service
-		}
+	blob, inKeychain, err := ReadLive(loc, platform, securityPath)
+	if err != nil {
+		return Capture{}, err
 	}
-	if platform != "darwin" || errors.Is(err, credstore.ErrAbsent) {
-		blob, err = os.ReadFile(path)
-		if err != nil {
-			return Capture{}, fmt.Errorf("cannot read credentials at %q", path)
-		}
+	source := loc.CredentialsFile
+	if inKeychain {
+		source = "Keychain service " + loc.Service
 	}
 	owned, err := accountCredentials(blob)
 	if err != nil {
@@ -161,20 +152,11 @@ func Read(platform, securityPath string) (Capture, error) {
 }
 
 func accountCredentials(blob []byte) ([]byte, error) {
-	var object, oauth map[string]json.RawMessage
-	if json.Unmarshal(blob, &object) != nil || object == nil ||
-		json.Unmarshal(object["claudeAiOauth"], &oauth) != nil {
+	access, refresh, err := OAuthTokens(blob)
+	if err != nil || access == "" || refresh == "" {
 		return nil, errors.New("invalid OAuth credentials")
 	}
-	access, accessOK := stringField(oauth, "accessToken")
-	refresh, refreshOK := stringField(oauth, "refreshToken")
-	if !accessOK || !refreshOK || access == "" || refresh == "" {
-		return nil, errors.New("invalid OAuth credentials")
-	}
-	for _, key := range []string{"mcpOAuth", "mcpOAuthClientConfig", "mcpXaaIdp", "mcpXaaIdpConfig", "pluginSecrets"} {
-		delete(object, key)
-	}
-	return json.Marshal(object)
+	return OwnedCredentials(blob)
 }
 
 func stringField(object map[string]json.RawMessage, key string) (string, bool) {
@@ -185,4 +167,76 @@ func stringField(object map[string]json.RawMessage, key string) (string, bool) {
 	var value string
 	err := json.Unmarshal(raw, &value)
 	return value, err == nil
+}
+
+func ReadLive(loc Locations, platform, securityPath string) ([]byte, bool, error) {
+	if platform == "darwin" {
+		blob, err := (credstore.Keychain{SecurityPath: securityPath}).ReadService(loc.KeychainAccount, loc.Service)
+		if !errors.Is(err, credstore.ErrAbsent) {
+			return blob, err == nil, err
+		}
+	}
+	// F2: only an absent Keychain item permits the macOS file fallback.
+	blob, err := os.ReadFile(loc.CredentialsFile)
+	if err != nil {
+		return nil, false, fmt.Errorf("cannot read credentials at %q", loc.CredentialsFile)
+	}
+	return blob, false, nil
+}
+
+func WriteLive(loc Locations, platform, securityPath string, inKeychain bool, blob []byte) error {
+	if platform == "darwin" && inKeychain {
+		return (credstore.Keychain{SecurityPath: securityPath}).WriteLive(loc.KeychainAccount, loc.Service, blob)
+	}
+	if err := statehome.ReplaceFile(loc.CredentialsFile, blob); err != nil {
+		return fmt.Errorf("cannot write credentials at %q", loc.CredentialsFile)
+	}
+	return nil
+}
+
+// OAuthTokens permits empty tokens so switch can recognize Claude's wiped login (F5).
+func OAuthTokens(blob []byte) (access, refresh string, err error) {
+	var object, oauth map[string]json.RawMessage
+	if json.Unmarshal(blob, &object) != nil || object == nil ||
+		json.Unmarshal(object["claudeAiOauth"], &oauth) != nil || oauth == nil {
+		return "", "", errors.New("invalid OAuth credentials")
+	}
+	access, accessOK := stringField(oauth, "accessToken")
+	refresh, refreshOK := stringField(oauth, "refreshToken")
+	if !accessOK || !refreshOK {
+		return "", "", errors.New("invalid OAuth credentials")
+	}
+	return access, refresh, nil
+}
+
+var sharedKeys = []string{"mcpOAuth", "mcpOAuthClientConfig", "mcpXaaIdp", "mcpXaaIdpConfig", "pluginSecrets"}
+
+func stripShared(object map[string]json.RawMessage) {
+	for _, key := range sharedKeys {
+		delete(object, key)
+	}
+}
+
+func OwnedCredentials(blob []byte) ([]byte, error) {
+	var object map[string]json.RawMessage
+	if json.Unmarshal(blob, &object) != nil || object == nil {
+		return nil, errors.New("invalid OAuth credentials")
+	}
+	stripShared(object)
+	return json.Marshal(object)
+}
+
+func MergeCredentials(target, live []byte) ([]byte, error) {
+	var object, machine map[string]json.RawMessage
+	if json.Unmarshal(target, &object) != nil || object == nil || json.Unmarshal(live, &machine) != nil || machine == nil {
+		return nil, errors.New("invalid OAuth credentials")
+	}
+	// F4: absence in the live object wins too; stale shared keys must disappear.
+	stripShared(object)
+	for _, key := range sharedKeys {
+		if value, exists := machine[key]; exists {
+			object[key] = value
+		}
+	}
+	return json.Marshal(object)
 }

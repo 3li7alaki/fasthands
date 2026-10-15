@@ -83,29 +83,11 @@ func (m Manager) Add(c claudecfg.Capture, alias string, aliasGiven bool) (Result
 	if aliasGiven && !ValidAlias(alias) {
 		return Result{}, errors.New("alias must match ^[a-z0-9][a-z0-9_-]{0,31}$")
 	}
-	if err := statehome.PrivateDir(m.Paths.State); err != nil {
-		return Result{}, fmt.Errorf("cannot create state directory %q", m.Paths.State)
-	}
-	lockPath := filepath.Join(m.Paths.State, "accounts.lock")
-	// Keep one stable inode across atomic metadata renames and across processes.
-	lock, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR|syscall.O_NOFOLLOW, 0600)
+	lock, err := m.lock()
 	if err != nil {
-		return Result{}, fmt.Errorf("cannot open accounts lock at %q", lockPath)
+		return Result{}, err
 	}
-	defer lock.Close()
-	if err := lock.Chmod(0600); err != nil {
-		return Result{}, fmt.Errorf("cannot secure accounts lock at %q", lockPath)
-	}
-	for {
-		err = syscall.Flock(int(lock.Fd()), syscall.LOCK_EX)
-		if err != syscall.EINTR {
-			break
-		}
-	}
-	if err != nil {
-		return Result{}, fmt.Errorf("cannot acquire accounts lock at %q", lockPath)
-	}
-	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
+	defer unlock(lock)
 	db, err := m.read()
 	if err != nil {
 		return Result{}, err
@@ -140,6 +122,38 @@ func (m Manager) Add(c claudecfg.Capture, alias string, aliasGiven bool) (Result
 		return Result{}, fmt.Errorf("cannot write accounts at %q", path)
 	}
 	return Result{alias, c.AccountUUID, c.Email, c.OrganizationUUID, m.Store.Kind(), updated}, nil
+}
+
+func (m Manager) lock() (*os.File, error) {
+	if err := statehome.PrivateDir(m.Paths.State); err != nil {
+		return nil, fmt.Errorf("cannot create state directory %q", m.Paths.State)
+	}
+	path := filepath.Join(m.Paths.State, "accounts.lock")
+	// Keep one stable inode across atomic metadata renames and across processes.
+	lock, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|syscall.O_NOFOLLOW, 0600)
+	if err != nil {
+		return nil, fmt.Errorf("cannot open accounts lock at %q", path)
+	}
+	if err := lock.Chmod(0600); err != nil {
+		lock.Close()
+		return nil, fmt.Errorf("cannot secure accounts lock at %q", path)
+	}
+	for {
+		err = syscall.Flock(int(lock.Fd()), syscall.LOCK_EX)
+		if err != syscall.EINTR {
+			break
+		}
+	}
+	if err != nil {
+		lock.Close()
+		return nil, fmt.Errorf("cannot acquire accounts lock at %q", path)
+	}
+	return lock, nil
+}
+
+func unlock(lock *os.File) {
+	syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
+	lock.Close()
 }
 
 func defaultAlias(email, id string, accounts map[string]Account) string {

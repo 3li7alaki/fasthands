@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"fasthands/internal/accounts"
+	"fasthands/internal/claudecfg"
 )
 
 const activeBlob = `{"claudeAiOauth":{"accessToken":"cli-access-private","refreshToken":"cli-refresh-private"},"trustedDeviceToken":"device-private","unknown":{"keep":true},"mcpOAuth":{"shared":true},"mcpOAuthClientConfig":{},"mcpXaaIdp":{},"mcpXaaIdpConfig":{},"pluginSecrets":{}}`
@@ -28,6 +29,7 @@ func setupActive(t *testing.T) (string, string) {
 		t.Fatal(err)
 	}
 	t.Setenv("HOME", root)
+	t.Setenv("USER", "test-user")
 	t.Setenv("CLAUDE_CONFIG_DIR", home)
 	t.Setenv("CLAUDE_SECURESTORAGE_CONFIG_DIR", "")
 	if err := os.Unsetenv("CLAUDE_SECURESTORAGE_CONFIG_DIR"); err != nil {
@@ -202,7 +204,7 @@ func TestFailedSourceReadChangesNothing(t *testing.T) {
 func TestMacCommandWithFakeSecurity(t *testing.T) {
 	home, fast := setupActive(t)
 	platform = "darwin"
-	t.Setenv("CLAUDE_SECURESTORAGE_CONFIG_DIR", "/tmp/fh test")
+	t.Setenv("CLAUDE_SECURESTORAGE_CONFIG_DIR", home)
 	t.Setenv("USER", "fh.user-1")
 	argvPath, stdinPath := filepath.Join(home, "argv"), filepath.Join(home, "stdin")
 	t.Setenv("FH_ARGS", argvPath)
@@ -221,8 +223,9 @@ func TestMacCommandWithFakeSecurity(t *testing.T) {
 		t.Fatal("macOS add through fake security failed")
 	}
 	assertOutputPrivate(t, out+err)
+	service, _ := claudecfg.Service(home, true)
 	args, readErr := os.ReadFile(argvPath)
-	if readErr != nil || string(args) != "find-generic-password\n-a\nfh.user-1\n-s\nClaude Code-credentials-2d0e408f\n-w\n-i\n" {
+	if readErr != nil || string(args) != "find-generic-password\n-a\nfh.user-1\n-s\n"+service+"\n-w\n-i\n" {
 		t.Fatal("macOS add must use resolved read identifiers and write through security -i")
 	}
 	assertOutputPrivate(t, string(args))
@@ -234,7 +237,7 @@ func TestMacCommandWithFakeSecurity(t *testing.T) {
 	if len(parts) != 2 {
 		t.Fatal("missing hex input")
 	}
-	blob, decodeErr := hex.DecodeString(parts[1])
+	blob, decodeErr := hex.DecodeString(strings.Trim(parts[1], `"`))
 	var owned map[string]json.RawMessage
 	if decodeErr != nil || json.Unmarshal(blob, &owned) != nil || len(owned) != 3 {
 		t.Fatal("Keychain backup did not strip shared keys")

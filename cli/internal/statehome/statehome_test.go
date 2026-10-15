@@ -2,6 +2,7 @@ package statehome
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -170,5 +171,135 @@ func assertOnlyTarget(t *testing.T, dir string) {
 	entries, err := os.ReadDir(dir)
 	if err != nil || len(entries) != 1 || entries[0].Name() != "account.json" {
 		t.Fatal("temporary file left behind")
+	}
+}
+
+// Invariant 10: Claude's files keep their mode, symlink, and parent directory mode.
+func TestReplaceFileModesAndSymlink(t *testing.T) {
+	for _, mode := range []os.FileMode{0600, 0644} {
+		for _, link := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%o/link=%t", mode, link), func(t *testing.T) {
+				dir := t.TempDir()
+				if err := os.Chmod(dir, 0755); err != nil {
+					t.Fatal(err)
+				}
+				path := filepath.Join(dir, "account.json")
+				if err := os.WriteFile(path, []byte("old"), mode); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Chmod(path, mode); err != nil {
+					t.Fatal(err)
+				}
+				target := path
+				if link {
+					path = filepath.Join(dir, "link")
+					if err := os.Symlink("account.json", path); err != nil {
+						t.Fatal(err)
+					}
+				}
+				old := syscall.Umask(0077)
+				defer syscall.Umask(old)
+				if err := ReplaceFile(path, []byte("new")); err != nil {
+					t.Fatal(err)
+				}
+				checkMode(t, target, mode)
+				checkMode(t, dir, 0755)
+				data, err := os.ReadFile(target)
+				if err != nil || string(data) != "new" {
+					t.Fatal("replacement did not reach resolved target")
+				}
+				if link {
+					if to, err := os.Readlink(path); err != nil || to != "account.json" {
+						t.Fatal("symlink replaced")
+					}
+				}
+				entries, err := os.ReadDir(dir)
+				want := 1
+				if link {
+					want++
+				}
+				if err != nil || len(entries) != want {
+					t.Fatal("temporary file left after replacement")
+				}
+			})
+		}
+	}
+	path := filepath.Join(t.TempDir(), "account.json")
+	if err := ReplaceFile(path, []byte("new")); err != nil {
+		t.Fatal(err)
+	}
+	checkMode(t, path, 0600)
+}
+
+// Invariant 10: every failure boundary cleans its temporary file without creating a parent.
+func TestReplaceFileFailureCleanup(t *testing.T) {
+	for _, failure := range []string{"open", "write", "file-sync", "rename", "dir-sync"} {
+		t.Run(failure, func(t *testing.T) {
+			dir, err := filepath.EvalSymlinks(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(dir, "account.json")
+			if err := os.WriteFile(path, []byte("old"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			fail := errors.New("injected failure")
+			ops := writeOps{
+				open: func(name string, flags int, mode os.FileMode) (*os.File, error) {
+					if flags&os.O_CREATE == 0 || flags&os.O_EXCL == 0 || mode != 0600 || filepath.Dir(name) != dir {
+						t.Fatal("replacement must use an exclusive temp beside target")
+					}
+					if failure == "open" {
+						return nil, fail
+					}
+					if failure == "write" {
+						flags = os.O_CREATE | os.O_EXCL | os.O_RDONLY
+					}
+					return os.OpenFile(name, flags, mode)
+				},
+				sync: func(f *os.File) error {
+					if failure == "file-sync" && f.Name() != dir || failure == "dir-sync" && f.Name() == dir {
+						return fail
+					}
+					return f.Sync()
+				},
+				rename: func(from, to string) error {
+					if failure == "rename" {
+						return fail
+					}
+					return os.Rename(from, to)
+				},
+			}
+			if replaceFile(path, []byte("new"), ops) == nil {
+				t.Fatal("injected failure ignored")
+			}
+			assertOnlyTarget(t, dir)
+			data, err := os.ReadFile(path)
+			want := "old"
+			if failure == "dir-sync" {
+				want = "new"
+			}
+			if err != nil || string(data) != want {
+				t.Fatal("unexpected target after failure")
+			}
+		})
+	}
+	dir := t.TempDir()
+	missing := filepath.Join(dir, "absent", "account.json")
+	if ReplaceFile(missing, nil) == nil {
+		t.Fatal("missing parent accepted")
+	}
+	if _, err := os.Stat(filepath.Dir(missing)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("replacement created a directory")
+	}
+	link := filepath.Join(dir, "link")
+	if err := os.Symlink(missing, link); err != nil {
+		t.Fatal(err)
+	}
+	if ReplaceFile(link, nil) == nil {
+		t.Fatal("dangling symlink accepted")
+	}
+	if _, err := os.Readlink(link); err != nil {
+		t.Fatal("dangling symlink replaced")
 	}
 }

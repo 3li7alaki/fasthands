@@ -1,0 +1,40 @@
+#!/bin/sh
+# Test-only Keychain: separate items per service and account, with portable hex decoding.
+mode=argv
+if [ "$1" = -i ]; then
+    mode=stdin
+    IFS= read -r line
+    eval "set -- $line"
+fi
+operation=$1
+shift
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        -a) account=$2; shift 2 ;;
+        -s) service=$2; shift 2 ;;
+        -X) hex=$2; shift 2 ;;
+        *) shift ;;
+    esac
+done
+item="$service/$account"
+path="$FH_KEYCHAIN/$item"
+printf '%s %s %s\n' "$mode" "$operation" "$item" >> "$FH_KEYCHAIN/calls"
+if [ "$operation" = find-generic-password ]; then
+    if [ "$FH_FAIL_READ" = "$item" ]; then
+        cat "$FH_KEYCHAIN/error" >&2
+        exit 1
+    fi
+    [ -f "$path" ] || exit 44
+    awk '{ for (i=1;i<=length($0);i+=2) printf "%c", (index("0123456789abcdef",substr($0,i,1))-1)*16+index("0123456789abcdef",substr($0,i+1,1))-1 }' "$path"
+    exit 0
+fi
+if [ "$operation" != add-generic-password ]; then
+    exit 1
+fi
+if [ "$FH_FAIL_WRITE" = "$item" ]; then
+    cat "$FH_KEYCHAIN/error" >&2
+    exit 1
+fi
+mkdir -p "$FH_KEYCHAIN/$service" || exit 1
+printf '%s' "$hex" > "$path" || exit 1
+printf '%s\n' "$item" >> "$FH_KEYCHAIN/writes"

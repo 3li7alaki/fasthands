@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -35,7 +36,7 @@ func TestKeychainRead(t *testing.T) {
 	for _, code := range []string{"0", "44", "1"} {
 		t.Run(code, func(t *testing.T) {
 			k, dir := fakeSecurity(t, code)
-			blob, err := k.Read("username", "Claude Code-credentials")
+			blob, err := k.ReadService("username", "Claude Code-credentials")
 			if code == "0" {
 				if err != nil || string(blob) != testBlob {
 					t.Fatal("Keychain read failed")
@@ -70,7 +71,7 @@ func TestKeychainWriteUsesOnlyStdin(t *testing.T) {
 	}
 	assertNoSecret(t, string(argv))
 	stdin, err := os.ReadFile(filepath.Join(dir, "stdin"))
-	want := "add-generic-password -U -a account-uuid -s fasthands -X " + hex.EncodeToString([]byte(testBlob)) + "\n"
+	want := `add-generic-password -U -a "account-uuid" -s "fasthands" -X "` + hex.EncodeToString([]byte(testBlob)) + "\"\n"
 	if err != nil || string(stdin) != want || bytes.Count(stdin, []byte("\n")) != 1 {
 		t.Fatal("Keychain write must send exactly one hex command on stdin")
 	}
@@ -79,7 +80,7 @@ func TestKeychainWriteUsesOnlyStdin(t *testing.T) {
 func TestKeychainWriteLineLimit(t *testing.T) {
 	k, dir := fakeSecurity(t, "0")
 	account := "id"
-	overhead := len("add-generic-password -U -a " + account + " -s fasthands -X \n")
+	overhead := len(`add-generic-password -U -a "` + account + `" -s "fasthands" -X ""` + "\n")
 	if overhead%2 != 0 {
 		account += "x"
 		overhead++
@@ -121,7 +122,7 @@ func TestKeychainTimeoutAndMissingBinaryAreUnreadable(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, path := range []string{k.SecurityPath, filepath.Join(dir, "missing-security")} {
-		_, err := (Keychain{SecurityPath: path}).Read("account", "Claude Code-credentials")
+		_, err := (Keychain{SecurityPath: path}).ReadService("account", "Claude Code-credentials")
 		if err == nil || errors.Is(err, ErrAbsent) || !strings.Contains(err.Error(), "unreadable") {
 			t.Fatal("timeout or missing binary must never mean absent")
 		}
@@ -166,6 +167,118 @@ func assertNoSecret(t *testing.T, value string) {
 		encoded := hex.EncodeToString([]byte(token))
 		if strings.Contains(value, token) || strings.Contains(strings.ToLower(value), encoded) {
 			t.Fatal("credential escaped into output or argv")
+		}
+	}
+}
+
+// Invariants 3, 14: live writes alone may fall back to argv; all failures stay private.
+func TestKeychainLiveWriteForms(t *testing.T) {
+	for _, large := range []bool{false, true} {
+		t.Run(fmt.Sprintf("large=%t", large), func(t *testing.T) {
+			k, dir := fakeSecurity(t, "0")
+			blob := []byte(testBlob)
+			if large {
+				blob = append(blob, bytes.Repeat([]byte("x"), 6000)...)
+			}
+			if err := k.WriteLive("user", "Claude Code-credentials", blob); err != nil {
+				t.Fatal(err)
+			}
+			args, err := os.ReadFile(filepath.Join(dir, "argv"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if large {
+				if string(args) != "add-generic-password\n-U\n-a\nuser\n-s\nClaude Code-credentials\n-X\n"+hex.EncodeToString(blob)+"\n" {
+					t.Fatal("oversized live item must use Claude's argv form")
+				}
+			} else if string(args) != "-i\n" {
+				t.Fatal("small live item must use stdin")
+			} else {
+				assertNoSecret(t, string(args))
+			}
+			t.Setenv("FH_EXIT", "1")
+			if err := k.WriteLive("user", "Claude Code-credentials", blob); err == nil {
+				t.Fatal("live write failure ignored")
+			} else {
+				assertNoSecret(t, err.Error())
+			}
+		})
+	}
+}
+
+// Invariant 3: the single interactive builder always quotes and escapes every value.
+func TestKeychainInteractiveQuotingAndPrevious(t *testing.T) {
+	k, dir := fakeSecurity(t, "0")
+	if err := k.WritePrev(`account"quoted`, []byte(testBlob)); err != nil {
+		t.Fatal(err)
+	}
+	line, _ := os.ReadFile(filepath.Join(dir, "stdin"))
+	want := `add-generic-password -U -a "account\"quoted" -s "fasthands-prev" -X "` + hex.EncodeToString([]byte(testBlob)) + "\"\n"
+	if string(line) != want {
+		t.Fatal("previous backup did not use quoted interactive command")
+	}
+	if err := k.WriteLive(`a\b"c`, `s\d"e`, nil); err != nil {
+		t.Fatal(err)
+	}
+	line, _ = os.ReadFile(filepath.Join(dir, "stdin"))
+	if string(line) != "add-generic-password -U -a \"a\\\\b\\\"c\" -s \"s\\\\d\\\"e\" -X \"\"\n" {
+		t.Fatal("backslashes and quotes were not escaped")
+	}
+	for _, invalid := range []string{"bad\nvalue", "bad\rvalue", "bad\x00value"} {
+		if k.WriteLive("account", invalid, nil) == nil || k.WriteLive(invalid, "service", nil) == nil {
+			t.Fatal("line injection accepted")
+		}
+	}
+	if err := os.Remove(filepath.Join(dir, "argv")); err != nil {
+		t.Fatal(err)
+	}
+	if k.WritePrev("account", bytes.Repeat([]byte("x"), 6000)) == nil {
+		t.Fatal("previous backup used oversized argv fallback")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "argv")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("oversized previous backup invoked security")
+	}
+}
+
+func TestFileReadAndPrevious(t *testing.T) {
+	f := Files{Directory: filepath.Join(t.TempDir(), "credentials")}
+	if _, err := f.Read("id"); !errors.Is(err, ErrAbsent) {
+		t.Fatal("missing backup must be absent")
+	}
+	if err := f.Write("id", []byte(testBlob)); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.WritePrev("id", []byte("previous")); err != nil {
+		t.Fatal(err)
+	}
+	blob, err := f.Read("id")
+	if err != nil || string(blob) != testBlob {
+		t.Fatal("file backup did not round-trip")
+	}
+	path := filepath.Join(f.Directory, "id.prev.json")
+	if err := os.Chmod(path, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.WritePrev("id", []byte(testBlob)); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	prev, readErr := os.ReadFile(path)
+	if err != nil || readErr != nil || info.Mode().Perm() != 0600 || !bytes.Equal(prev, blob) {
+		t.Fatal("previous file backup is not exact and private")
+	}
+	if err := os.Mkdir(filepath.Join(f.Directory, "unreadable.json"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Read("unreadable"); err == nil || errors.Is(err, ErrAbsent) {
+		t.Fatal("unreadable file must not be absent")
+	}
+	for _, account := range []string{"../bad", "bad\nvalue"} {
+		if _, err := f.Read(account); err == nil {
+			t.Fatal("unsafe read accepted")
+		}
+		if f.WritePrev(account, nil) == nil {
+			t.Fatal("unsafe previous backup accepted")
 		}
 	}
 }
