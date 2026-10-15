@@ -20,7 +20,7 @@ import (
 	"fasthands/internal/version"
 )
 
-const usage = "usage: fasthands {add [--alias NAME] | ls | switch ALIAS} [--json]\n       fasthands [--version] [--help] [--json]"
+const usage = "usage: fasthands {add [--alias NAME] | ls | switch ALIAS [--wait DURATION] [--force]} [--json]\n       fasthands [--version] [--help] [--json]"
 
 var platform = runtime.GOOS
 var securityPath = "/usr/bin/security"
@@ -55,8 +55,13 @@ func run(args []string, stdout, stderr io.Writer) int {
 	fs.Usage = func() {}
 	jsonMode := fs.Bool("json", false, "print JSON")
 	var alias string
+	options := accounts.SwitchOptions{Wait: 60 * time.Second}
 	if args[0] == "add" {
 		fs.StringVar(&alias, "alias", "", "account alias")
+	}
+	if args[0] == "switch" {
+		fs.DurationVar(&options.Wait, "wait", options.Wait, "wait for mid-turn Claude sessions")
+		fs.BoolVar(&options.Force, "force", false, "switch over mid-turn Claude sessions")
 	}
 	parseArgs := args[1:]
 	if args[0] == "switch" && len(parseArgs) > 0 && !strings.HasPrefix(parseArgs[0], "-") {
@@ -76,7 +81,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if args[0] == "switch" && alias == "" && remaining == 1 {
 		alias, remaining = fs.Arg(0), 0
 	}
-	if remaining != 0 || (aliasGiven || args[0] == "switch") && !accounts.ValidAlias(alias) {
+	if remaining != 0 || options.Wait < 0 || (aliasGiven || args[0] == "switch") && !accounts.ValidAlias(alias) {
 		fmt.Fprintln(stderr, "invalid arguments or alias; alias must match ^[a-z0-9][a-z0-9_-]{0,31}$")
 		return 2
 	}
@@ -114,7 +119,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stderr, err)
 			return 1
 		}
-		result, err := m.Switch(alias, loc, platform, securityPath)
+		result, err := m.Switch(alias, loc, platform, securityPath, options)
 		if err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1

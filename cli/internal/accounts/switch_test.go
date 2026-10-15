@@ -226,7 +226,7 @@ func TestSwitchHappyPath(t *testing.T) {
 			metadata, _ := os.ReadFile(filepath.Join(f.m.Paths.State, "accounts.json"))
 			var steps []string
 			beforeSwitchWrite = func(step string) { steps = append(steps, step) }
-			result, err := f.m.Switch("b", f.loc, platform, f.security)
+			result, err := f.m.Switch("b", f.loc, platform, f.security, SwitchOptions{})
 			if err != nil || !result.Switched || result.From != "a" || result.To != "b" || result.Store != f.m.Store.Kind() || result.Warnings == nil || len(result.Warnings) != 0 {
 				t.Fatalf("switch failed: %v", err)
 			}
@@ -289,7 +289,7 @@ func TestSwitchAlreadyActive(t *testing.T) {
 			f := setupSwitch(t, platform)
 			before := f.snapshot(t)
 			beforeSwitchWrite = func(string) { t.Fatal("already-active attempted a write") }
-			result, err := f.m.Switch("a", f.loc, platform, f.security)
+			result, err := f.m.Switch("a", f.loc, platform, f.security, SwitchOptions{})
 			if err != nil || result.Switched || result.From != "a" || result.To != "a" || result.Warnings == nil || !reflect.DeepEqual(before, f.snapshot(t)) {
 				t.Fatal("already-active changed state or result")
 			}
@@ -376,7 +376,7 @@ func TestSwitchRefusalsWriteNothing(t *testing.T) {
 				}
 				before := f.snapshot(t)
 				beforeSwitchWrite = func(string) { t.Fatal("refusal attempted a write") }
-				_, err := f.m.Switch(alias, f.loc, platform, f.security)
+				_, err := f.m.Switch(alias, f.loc, platform, f.security, SwitchOptions{})
 				if err == nil || want != "" && err.Error() != want {
 					t.Fatalf("wrong refusal: %v", err)
 				}
@@ -408,7 +408,7 @@ func TestSwitchKeepsOutgoingBackup(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				result, err := f.m.Switch("b", f.loc, platform, f.security)
+				result, err := f.m.Switch("b", f.loc, platform, f.security, SwitchOptions{})
 				if err != nil || !result.Switched || !reflect.DeepEqual(result.Warnings, []string{warning}) || !bytes.Equal(f.rawBackup(t, "id-a", false), f.stored) {
 					t.Fatalf("protected outgoing backup failed: %v", err)
 				}
@@ -451,7 +451,7 @@ func TestSwitchWriteFailures(t *testing.T) {
 				if failure != "live" {
 					switchWriteConfig = func(string, []byte) error { return errors.New("injected-private") }
 				}
-				_, err := f.m.Switch("b", f.loc, platform, f.security)
+				_, err := f.m.Switch("b", f.loc, platform, f.security, SwitchOptions{})
 				if err == nil {
 					t.Fatal("write failure was ignored")
 				}
@@ -488,7 +488,7 @@ func TestSwitchLostLockBetweenWrites(t *testing.T) {
 						}
 					}
 				}
-				_, err := f.m.Switch("b", f.loc, platform, f.security)
+				_, err := f.m.Switch("b", f.loc, platform, f.security, SwitchOptions{})
 				if err == nil || reached[len(reached)-1] != step || !bytes.Equal(f.rawLive(t), f.live) {
 					t.Fatal("lost lock allowed further writes or left activated credentials")
 				}
@@ -521,7 +521,7 @@ func TestSwitchMacFileFallback(t *testing.T) {
 		t.Fatal(err)
 	}
 	put(t, f.loc.CredentialsFile, f.live)
-	result, err := f.m.Switch("b", f.loc, "darwin", f.security)
+	result, err := f.m.Switch("b", f.loc, "darwin", f.security, SwitchOptions{})
 	if err != nil || !result.Switched || result.Store != "file" {
 		t.Fatalf("macOS file fallback failed: %v", err)
 	}
@@ -559,7 +559,7 @@ func TestSwitchKeychainSizeChecks(t *testing.T) {
 			blob, _ := json.Marshal(object)
 			f.setLive(t, blob)
 			before := f.snapshot(t)
-			result, err := f.m.Switch("b", f.loc, "darwin", f.security)
+			result, err := f.m.Switch("b", f.loc, "darwin", f.security, SwitchOptions{})
 			calls, _ := os.ReadFile(filepath.Join(f.keychain, "calls"))
 			if kind == "live" {
 				if err != nil || !result.Switched || !strings.Contains(string(calls), "argv add-generic-password "+f.loc.Service+"/") {

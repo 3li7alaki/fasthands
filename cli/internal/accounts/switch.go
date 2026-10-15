@@ -7,10 +7,13 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strconv"
+	"strings"
 	"time"
 
 	"fasthands/internal/claudecfg"
 	"fasthands/internal/claudelock"
+	"fasthands/internal/claudesessions"
 	"fasthands/internal/credstore"
 	"fasthands/internal/statehome"
 )
@@ -24,20 +27,30 @@ type SwitchResult struct {
 	Email    string   `json:"-"`
 }
 
+type SwitchOptions struct {
+	Wait  time.Duration
+	Force bool
+}
+
 // Local I/O boundaries are injectable for failure and ownership-loss tests (invariants 8, 9).
 var claudeLockTimeout = 10 * time.Second
 var switchWriteLive = claudecfg.WriteLive
 var switchWriteConfig = statehome.ReplaceFile
 var beforeSwitchWrite = func(step string) {}
+var switchPollInterval = time.Second
+var switchScan = claudesessions.Scan
 
 type backupWrite struct {
 	blob     []byte
 	previous bool
 }
 
-func (m Manager) Switch(alias string, loc claudecfg.Locations, platform, securityPath string) (SwitchResult, error) {
+func (m Manager) Switch(alias string, loc claudecfg.Locations, platform, securityPath string, options SwitchOptions) (SwitchResult, error) {
 	if !ValidAlias(alias) {
 		return SwitchResult{}, errors.New("alias must match ^[a-z0-9][a-z0-9_-]{0,31}$")
+	}
+	if err := m.waitForSessions(alias, loc, options); err != nil {
+		return SwitchResult{}, err
 	}
 	lock, err := m.lock()
 	if err != nil {
@@ -95,6 +108,17 @@ func (m Manager) Switch(alias string, loc claudecfg.Locations, platform, securit
 	}
 	if liveID == targetID {
 		return result, nil
+	}
+	sessions, err := switchScan(loc.ConfigHome)
+	if err != nil {
+		return SwitchResult{}, err
+	}
+	if mid := othersMidTurn(sessions); len(mid) != 0 {
+		message := midTurnMessage(mid)
+		if !options.Force {
+			return SwitchResult{}, errors.New(message + "; retry when they finish, or pass --wait or --force")
+		}
+		result.Warnings = append(result.Warnings, message)
 	}
 	if !managed {
 		return SwitchResult{}, fmt.Errorf("the active Claude Code login (%s) is not managed by fasthands; run fasthands add first", email)
@@ -193,6 +217,70 @@ func (m Manager) Switch(alias string, loc claudecfg.Locations, platform, securit
 	}
 	result.Switched = true
 	return result, nil
+}
+
+func (m Manager) waitForSessions(alias string, loc claudecfg.Locations, options SwitchOptions) error {
+	db, err := m.read()
+	if err != nil {
+		return err
+	}
+	// S3: an unlocked hint skips waiting only; the locked identity check still decides.
+	data, _ := os.ReadFile(loc.GlobalConfig)
+	var config, identity map[string]json.RawMessage
+	var liveID string
+	if json.Unmarshal(data, &config) == nil && json.Unmarshal(config["oauthAccount"], &identity) == nil {
+		json.Unmarshal(identity["accountUuid"], &liveID)
+	}
+	for id, account := range db.Accounts {
+		if account.Alias == alias && id == liveID {
+			return nil
+		}
+	}
+	if options.Force {
+		return nil
+	}
+	deadline := time.Now().Add(options.Wait)
+	for {
+		sessions, err := switchScan(loc.ConfigHome)
+		if err != nil {
+			return err
+		}
+		if len(othersMidTurn(sessions)) == 0 || time.Until(deadline) <= 0 {
+			return nil
+		}
+		// S3: waiting holds neither the accounts flock nor Claude's credential locks.
+		time.Sleep(min(switchPollInterval, time.Until(deadline)))
+	}
+}
+
+// othersMidTurn drops the Claude session that is running this command (`!` or a tool
+// call): it is busy by definition and asked for the switch. Claude Code sets CLAUDE_PID
+// in every child process (observed on 2.1.300).
+func othersMidTurn(sessions []claudesessions.Session) []claudesessions.Session {
+	mid := claudesessions.MidTurn(sessions)
+	caller, err := strconv.Atoi(os.Getenv("CLAUDE_PID"))
+	if err != nil || caller <= 1 {
+		return mid
+	}
+	others := mid[:0]
+	for _, session := range mid {
+		if session.Unreadable || session.PID != caller {
+			others = append(others, session)
+		}
+	}
+	return others
+}
+
+func midTurnMessage(sessions []claudesessions.Session) string {
+	var names []string
+	for _, session := range sessions {
+		if session.Unreadable {
+			names = append(names, "unreadable record "+session.Path)
+		} else {
+			names = append(names, fmt.Sprintf("pid %d (cwd %s)", session.PID, session.CWD))
+		}
+	}
+	return fmt.Sprintf("%d Claude session(s) mid-turn: %s", len(sessions), strings.Join(names, ", "))
 }
 
 func unreadableBackup(alias string) error {

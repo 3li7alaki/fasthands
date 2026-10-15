@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"fasthands/internal/accounts"
 	"fasthands/internal/claudecfg"
 	"fasthands/internal/claudelock"
 )
@@ -170,6 +171,8 @@ func TestSwitchCommandUsage(t *testing.T) {
 	for _, args := range [][]string{
 		{"switch"}, {"switch", "--json"}, {"switch", "a", "b"}, {"switch", "BAD"},
 		{"switch", "a.b"}, {"switch", "a", "--json=invalid"}, {"switch", "a", "--alias", "b"},
+		{"switch", "a", "--wait", "invalid"}, {"switch", "a", "--wait", "-1s"},
+		{"switch", "a", "--wait"}, {"switch", "a", "--force=invalid"},
 	} {
 		code, out, err := invoke(args...)
 		if code != 2 || out != "" || err == "" {
@@ -181,6 +184,83 @@ func TestSwitchCommandUsage(t *testing.T) {
 		if code != 0 || !strings.Contains(out, "switch ALIAS") || err != "" {
 			t.Fatal("switch missing from help")
 		}
+	}
+}
+
+// Slice 3 invariants 6, 7, 9, 10: command refusals stay on stderr; force exposes warnings in either mode.
+func TestSwitchCommandMidTurn(t *testing.T) {
+	for _, targetPlatform := range []string{"linux", "darwin"} {
+		for _, mode := range []string{"refuse-human", "refuse-json", "force-human", "force-json", "already"} {
+			t.Run(targetPlatform+"/"+mode, func(t *testing.T) {
+				f := setupSwitchCommand(t, targetPlatform)
+				dir := filepath.Join(f.home, "sessions")
+				if err := os.Mkdir(dir, 0700); err != nil {
+					t.Fatal(err)
+				}
+				path := filepath.Join(dir, "42.json")
+				writeFixture(t, path, "not JSON")
+				alias := "b"
+				if mode == "already" {
+					alias = "a"
+				}
+				args := []string{"switch", alias}
+				if strings.HasPrefix(mode, "force") {
+					args = append(args, "--force")
+				} else if mode != "already" {
+					args = append(args, "--wait", "0")
+				}
+				if strings.HasSuffix(mode, "json") {
+					args = append(args, "--json")
+				}
+				before := snapshot(t, f.fast)
+				config, _ := os.ReadFile(f.loc.GlobalConfig)
+				live, inKeychain, readErr := claudecfg.ReadLive(f.loc, platform, securityPath)
+				if readErr != nil {
+					t.Fatal(readErr)
+				}
+				code, out, err := invoke(args...)
+				message := "1 Claude session(s) mid-turn: unreadable record " + path
+				if strings.HasPrefix(mode, "refuse") {
+					if code != 1 || out != "" || err != message+"; retry when they finish, or pass --wait or --force\n" {
+						t.Fatal("mid-turn command refusal must use stderr and exit 1")
+					}
+				} else if mode == "force-json" {
+					var result accounts.SwitchResult
+					if code != 0 || err != "" || json.Unmarshal([]byte(out), &result) != nil || !result.Switched || !reflect.DeepEqual(result.Warnings, []string{message}) {
+						t.Fatal("forced JSON switch lost its warning")
+					}
+				} else if mode == "force-human" {
+					if code != 0 || !strings.HasPrefix(out, "switched to b (second@example.com)\n") || err != "warning: "+message+"\n" {
+						t.Fatal("forced human switch lost its warning")
+					}
+				} else if code != 0 || out != "a is already active\n" || err != "" {
+					t.Fatal("already-active command must skip waiting")
+				}
+				if !strings.HasPrefix(mode, "force") {
+					afterConfig, _ := os.ReadFile(f.loc.GlobalConfig)
+					afterLive, afterKeychain, readErr := claudecfg.ReadLive(f.loc, platform, securityPath)
+					if readErr != nil || inKeychain != afterKeychain || !bytes.Equal(config, afterConfig) || !bytes.Equal(live, afterLive) || !reflect.DeepEqual(before, snapshot(t, f.fast)) {
+						t.Fatal("refused or already-active command changed state")
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestAddDoesNotWaitForSessions(t *testing.T) {
+	for _, targetPlatform := range []string{"linux", "darwin"} {
+		t.Run(targetPlatform, func(t *testing.T) {
+			f := setupSwitchCommand(t, targetPlatform)
+			dir := filepath.Join(f.home, "sessions")
+			if err := os.Mkdir(dir, 0700); err != nil {
+				t.Fatal(err)
+			}
+			writeFixture(t, filepath.Join(dir, "42.json"), "not JSON")
+			if code, _, err := invoke("add", "--json"); code != 0 || err != "" {
+				t.Fatal("capturing current login must not wait for sessions")
+			}
+		})
 	}
 }
 
