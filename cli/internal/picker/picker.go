@@ -180,7 +180,7 @@ func Decide(accounts []Account, active string, lastSwitchAt, now int64) Decision
 		ar, br := a.Windows.SevenDay.ResetsAt, b.Windows.SevenDay.ResetsAt
 		if ar != 0 && br != 0 {
 			if br <= ar-tie {
-				return switchTo(*b, fmt.Sprintf("rule 3: %s resets %s UTC, at least 1h before %s", b.Alias, time.Unix(br, 0).UTC().Format("Mon 15:04"), a.Alias))
+				return switchTo(*b, fmt.Sprintf("rule 3: %s resets %s, at least 1h before %s", b.Alias, time.Unix(br, 0).Local().Format("Mon 15:04"), a.Alias))
 			}
 			if br > ar-tie && br < ar+tie && rank(*b) < rank(a) {
 				return switchTo(*b, fmt.Sprintf("rule 3: %s has higher priority than %s within weekly reset tie", b.Alias, a.Alias))
