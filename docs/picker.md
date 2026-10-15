@@ -5,7 +5,7 @@ example once it ships.
 
 ## Problem
 
-N Claude Pro accounts, each with a rolling 5h window, a weekly window with its own reset
+N Claude Max accounts (the user runs Max only, never Pro), each with a rolling 5h window, a weekly window with its own reset
 time, and per-model weekly windows. Weekly quota left unused at reset is gone. Goal: never
 hit a limit, waste as little weekly quota as possible, never flap.
 
@@ -41,12 +41,12 @@ A `resets_at` already in the past means unknown, never "soonest". Unknown sorts 
 
 ## Mixed plans
 
-The active account on the user's Mac is Max (`subscriptionType: max`), so plans do mix.
+Every account is Max, but Max comes in two sizes (5x and 20x), so tiers can still mix.
 FEFO ordering (rule 2) and eligibility (rule 1) need no change: each account's own
 quota expires on its own reset, and its own `used` fraction says whether it has room.
 Only cross-account headroom comparisons (the tie-break in rule 2) must weight `1 - used`
-by plan size, read from `rateLimitTier` (stored per account since slice 4a): Pro 1,
-Max 5x 5, Max 20x 20.
+by plan size, read from `rateLimitTier` (stored per account since slice 4a): Max 5x 5,
+Max 20x 20. With every account on one tier the weights cancel out.
 
 Ceiling: those weights are the advertised multipliers, not measured capacity. An unknown
 tier counts as 1 and is shown as `-` in `status`.
