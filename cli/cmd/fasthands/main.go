@@ -20,7 +20,7 @@ import (
 	"fasthands/internal/version"
 )
 
-const usage = "usage: fasthands {add [--alias NAME] | ls | switch ALIAS [--wait DURATION] [--force]} [--json]\n       fasthands [--version] [--help] [--json]"
+const usage = "usage: fasthands {add [--alias NAME] | ls | switch ALIAS [--wait DURATION] [--force] | status | hook statusline} [--json]\n       fasthands [--version] [--help] [--json]"
 
 var platform = runtime.GOOS
 var securityPath = "/usr/bin/security"
@@ -31,6 +31,10 @@ func main() {
 }
 
 func run(args []string, stdout, stderr io.Writer) int {
+	if len(args) >= 2 && args[0] == "hook" && args[1] == "statusline" {
+		statusline(os.Stdin, stdout)
+		return 0
+	}
 	switch base.Command(args) {
 	case "help":
 		fmt.Fprintln(stdout, usage)
@@ -46,7 +50,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stdout, usage)
 		return 0
 	}
-	if args[0] != "add" && args[0] != "ls" && args[0] != "switch" {
+	if args[0] != "add" && args[0] != "ls" && args[0] != "switch" && args[0] != "status" {
 		fmt.Fprintln(stderr, usage)
 		return 2
 	}
@@ -91,6 +95,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	m := accounts.Manager{Paths: paths, Store: credstore.New(platform, securityPath, paths.Credentials)}
+	if args[0] == "status" {
+		return status(m, *jsonMode, stdout, stderr)
+	}
 	if args[0] == "add" {
 		// Capture both sources before creating fasthands state, backups, or metadata.
 		capture, err := readActive()

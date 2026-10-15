@@ -16,6 +16,7 @@ import (
 	"fasthands/internal/claudesessions"
 	"fasthands/internal/credstore"
 	"fasthands/internal/statehome"
+	"fasthands/internal/usage"
 )
 
 type SwitchResult struct {
@@ -46,6 +47,17 @@ type backupWrite struct {
 }
 
 func (m Manager) Switch(alias string, loc claudecfg.Locations, platform, securityPath string, options SwitchOptions) (SwitchResult, error) {
+	result, err := m.switchAccount(alias, loc, platform, securityPath, options)
+	// Take usage.lock only after switchAccount releases Claude's locks and accounts.lock.
+	if err == nil && result.Switched {
+		if markErr := (usage.Store{Directory: m.Paths.State}).MarkSwitch(now().Unix()); markErr != nil {
+			result.Warnings = append(result.Warnings, "cannot record switch time: "+markErr.Error())
+		}
+	}
+	return result, err
+}
+
+func (m Manager) switchAccount(alias string, loc claudecfg.Locations, platform, securityPath string, options SwitchOptions) (SwitchResult, error) {
 	if !ValidAlias(alias) {
 		return SwitchResult{}, errors.New("alias must match ^[a-z0-9][a-z0-9_-]{0,31}$")
 	}
@@ -200,6 +212,17 @@ func (m Manager) Switch(alias string, loc claudecfg.Locations, platform, securit
 		}
 		if err != nil {
 			return SwitchResult{}, err
+		}
+		if !write.previous {
+			subscription, tier := claudecfg.Plan(write.blob)
+			if active.SubscriptionType != subscription || active.RateLimitTier != tier {
+				active.SubscriptionType, active.RateLimitTier = subscription, tier
+				db.Accounts[liveID] = active
+				// Save U4 metadata only when the outgoing backup actually accepts this login.
+				if err := m.write(db); err != nil {
+					return SwitchResult{}, err
+				}
+			}
 		}
 	}
 	if err := check("live"); err != nil {

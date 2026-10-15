@@ -27,6 +27,8 @@ type Account struct {
 	UpdatedAt        string          `json:"updatedAt"`
 	Store            string          `json:"store"`
 	OAuthAccount     json.RawMessage `json:"oauthAccount"`
+	SubscriptionType string          `json:"subscriptionType,omitempty"`
+	RateLimitTier    string          `json:"rateLimitTier,omitempty"`
 }
 
 type database struct {
@@ -57,6 +59,7 @@ type Manager struct {
 }
 
 var aliasPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,31}$`)
+var now = time.Now
 
 func ValidAlias(alias string) bool { return aliasPattern.MatchString(alias) }
 
@@ -74,6 +77,27 @@ func (m Manager) read() (database, error) {
 		return database{}, fmt.Errorf("invalid accounts metadata at %q", path)
 	}
 	return db, nil
+}
+
+// Read needs no accounts flock: atomic renames provide snapshots, with one torn-read retry.
+func (m Manager) Read() (map[string]Account, error) {
+	db, err := m.read()
+	if err != nil {
+		db, err = m.read()
+	}
+	return db.Accounts, err
+}
+
+func (m Manager) write(db database) error {
+	data, err := json.MarshalIndent(db, "", "  ")
+	if err != nil {
+		return errors.New("cannot encode accounts metadata")
+	}
+	path := filepath.Join(m.Paths.State, "accounts.json")
+	if err := statehome.AtomicWrite(path, append(data, '\n')); err != nil {
+		return fmt.Errorf("cannot write accounts at %q", path)
+	}
+	return nil
 }
 
 func (m Manager) Add(c claudecfg.Capture, alias string, aliasGiven bool) (Result, error) {
@@ -104,22 +128,21 @@ func (m Manager) Add(c claudecfg.Capture, alias string, aliasGiven bool) (Result
 			return Result{}, fmt.Errorf("alias %q is already in use", alias)
 		}
 	}
-	now := time.Now().UTC().Format(time.RFC3339)
+	timestamp := now().UTC().Format(time.RFC3339)
 	added := previous.AddedAt
 	if !updated {
-		added = now
+		added = timestamp
 	}
-	db.Accounts[c.AccountUUID] = Account{alias, c.Email, c.OrganizationUUID, added, now, m.Store.Kind(), c.OAuthAccount}
-	data, err := json.MarshalIndent(db, "", "  ")
-	if err != nil {
+	db.Accounts[c.AccountUUID] = Account{alias, c.Email, c.OrganizationUUID, added, timestamp, m.Store.Kind(), c.OAuthAccount, c.SubscriptionType, c.RateLimitTier}
+	// Validate encoding before replacing the backup, as add did before plan metadata existed.
+	if _, err := json.Marshal(db); err != nil {
 		return Result{}, errors.New("cannot encode accounts metadata")
 	}
 	if err := m.Store.Write(c.AccountUUID, c.Credentials); err != nil {
 		return Result{}, err
 	}
-	path := filepath.Join(m.Paths.State, "accounts.json")
-	if err := statehome.AtomicWrite(path, append(data, '\n')); err != nil {
-		return Result{}, fmt.Errorf("cannot write accounts at %q", path)
+	if err := m.write(db); err != nil {
+		return Result{}, err
 	}
 	return Result{alias, c.AccountUUID, c.Email, c.OrganizationUUID, m.Store.Kind(), updated}, nil
 }

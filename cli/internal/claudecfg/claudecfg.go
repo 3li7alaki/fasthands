@@ -22,6 +22,8 @@ type Capture struct {
 	OrganizationUUID string
 	OAuthAccount     json.RawMessage
 	Credentials      []byte
+	SubscriptionType string
+	RateLimitTier    string
 }
 
 type Locations struct {
@@ -148,7 +150,33 @@ func Read(platform, securityPath string) (Capture, error) {
 	if !idOK || id == "" || !emailOK || !orgOK {
 		return Capture{}, fmt.Errorf("invalid oauthAccount in global config at %q (accountUuid required)", global)
 	}
-	return Capture{id, email, org, config["oauthAccount"], owned}, nil
+	subscription, tier := Plan(blob)
+	return Capture{id, email, org, config["oauthAccount"], owned, subscription, tier}, nil
+}
+
+// Plan reads only U4's public strings; credentials never enter account metadata.
+func Plan(blob []byte) (subscription, tier string) {
+	var object, oauth map[string]json.RawMessage
+	if json.Unmarshal(blob, &object) == nil && json.Unmarshal(object["claudeAiOauth"], &oauth) == nil {
+		subscription, _ = stringField(oauth, "subscriptionType")
+		tier, _ = stringField(oauth, "rateLimitTier")
+	}
+	return
+}
+
+// ActiveUUID reads only the global config, keeping passive commands away from credentials.
+func ActiveUUID(loc Locations) (string, error) {
+	data, err := os.ReadFile(loc.GlobalConfig)
+	if err != nil {
+		return "", fmt.Errorf("cannot read global config at %q", loc.GlobalConfig)
+	}
+	var config, identity map[string]json.RawMessage
+	var id string
+	if json.Unmarshal(data, &config) != nil || json.Unmarshal(config["oauthAccount"], &identity) != nil ||
+		json.Unmarshal(identity["accountUuid"], &id) != nil || id == "" {
+		return "", fmt.Errorf("invalid oauthAccount in global config at %q (accountUuid required)", loc.GlobalConfig)
+	}
+	return id, nil
 }
 
 func accountCredentials(blob []byte) ([]byte, error) {
