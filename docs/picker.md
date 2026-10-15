@@ -33,7 +33,10 @@ windows of the models in use): `used` in 0..1 and `resets_at`.
 5. Refresh the chosen candidate's usage before acting (it may have been used elsewhere,
    such as a VPS on a setup-token) and re-run the rule on the fresh numbers.
 
-A `resets_at` already in the past means unknown, never "soonest". Unknown sorts last.
+A `resets_at` already in the past is never "soonest": every window goes through
+`usage.Effective` first, which rolls a past weekly reset forward by whole weeks (weekly
+windows advance exactly 7 days) and turns a past 5h reset into used 0 with an unknown
+reset. Unknown sorts last.
 
 ## Why
 
