@@ -17,7 +17,8 @@ windows of the models in use): `used` in 0..1 and `resets_at`.
 1. Eligible: every used window is at least `hysteresis` below `threshold`
    (defaults 0.10 and 0.90, so under 0.80).
 2. Rank eligible accounts by soonest weekly reset (FEFO: first expired, first out).
-   Resets within `tie` (1h) of each other: more weekly headroom wins.
+   Resets within `tie` (1h) of each other: the user's priority order wins, then more
+   weekly headroom.
 3. Switch when, outside the `cooldown` (5 min; bypassed when the active account is at
    its limit):
    - the active account's binding window (its highest `used`) reaches `threshold`, or
@@ -38,6 +39,18 @@ A `resets_at` already in the past means unknown, never "soonest". Unknown sorts 
 - Pace (`used - elapsed/week`) is display only in `status`. As a trigger it would move
   off the soonest-resetting account and waste the quota about to expire; every other
   case is already covered by rule 2.
+
+## Priority
+
+The user may rank accounts (`fasthands priority work personal`, stored in accounts.json;
+unranked accounts sort after ranked ones). Priority only breaks FEFO ties: it decides
+between accounts whose weekly resets fall within `tie` of each other, ahead of the
+headroom comparison. It never overrides an earlier reset, so it costs no expiring
+quota. Decided 2026-10-15 (user's call, "1. yeah") over "priority first", which would
+let other accounts' weekly quota expire unused while the preferred one has room.
+
+Ceiling: with resets hours apart the tie rarely applies, so the preferred account is
+not guaranteed to be the one in use.
 
 ## Mixed plans
 
