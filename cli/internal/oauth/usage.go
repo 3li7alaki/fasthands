@@ -23,8 +23,8 @@ type Usage struct {
 }
 
 type Client struct {
-	UsageURL, UserAgent string
-	HTTP                *http.Client
+	UsageURL, TokenURL, UserAgent string
+	HTTP                          *http.Client
 }
 
 var ErrUnauthorized = errors.New("access token rejected")

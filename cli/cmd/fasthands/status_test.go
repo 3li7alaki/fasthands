@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -191,7 +192,13 @@ func TestStatusJSON(t *testing.T) {
 	if err := statehome.AtomicWrite(path, data); err != nil {
 		t.Fatal(err)
 	}
-	before := snapshot(t, f.fast)
+	usageServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Host != "token.test" {
+			t.Error("expired account reached usage")
+		}
+		w.WriteHeader(400)
+		io.WriteString(w, `{"error":"invalid_grant"}`)
+	})
 	code, out, stderr := invoke("status", "--json")
 	var result struct {
 		Accounts []map[string]json.RawMessage `json:"accounts"`
@@ -216,12 +223,12 @@ func TestStatusJSON(t *testing.T) {
 			t.Fatalf("unknown %s must be null", key)
 		}
 	}
-	if string(a["active"]) != "false" || string(a["note"]) != `"access token expired"` || !reflect.DeepEqual(before, snapshot(t, f.fast)) {
-		t.Fatal("status changed state")
+	if string(a["active"]) != "false" || string(a["note"]) != `"stored login expired; log in to Claude Code as a and run fasthands add"` {
+		t.Fatal("wrong expired-login note")
 	}
 	calls, err := os.ReadFile(filepath.Join(f.keychain, "calls"))
-	if err != nil || string(calls) != "argv find-generic-password fasthands/12345678-1234-1234-1234-123456789abc\n" {
-		t.Fatal("status must read only the stale idle account's backup")
+	if err != nil || strings.Count(string(calls), "find-generic-password fasthands/12345678-1234-1234-1234-123456789abc\n") != 2 || strings.Count(string(calls), "add-generic-password fasthands-prev/12345678-1234-1234-1234-123456789abc\n") != 1 {
+		t.Fatal("status must preserve only the stale idle account's previous backup")
 	}
 }
 
@@ -246,6 +253,13 @@ func TestStatusHuman(t *testing.T) {
 	for _, input := range []string{statusSample, strings.Replace(statusSample, `:42`, `:43`, 1)} {
 		hook(t, input)
 	}
+	usageServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Host != "token.test" {
+			t.Error("expired account reached usage")
+		}
+		w.WriteHeader(400)
+		io.WriteString(w, `{"error":"invalid_grant"}`)
+	})
 	code, out, stderr := invoke("status")
 	if code != 0 || stderr != "" {
 		t.Fatal("human status failed")
@@ -253,7 +267,7 @@ func TestStatusHuman(t *testing.T) {
 	fiveReset := time.Unix(1792080000, 0).UTC().Format("15:04")
 	weekReset := time.Unix(1792400000, 0).UTC().Format("Mon 15:04")
 	if !strings.HasPrefix(out, "a\t*\t43%\t"+fiveReset+"\t61.5%\t"+weekReset+"\t+16.1\t0s ago\t-\t\n") ||
-		!strings.HasSuffix(out, "b\t\t-\t-\t-\t-\t-\tnever\t-\taccess token expired\n") {
+		!strings.HasSuffix(out, "b\t\t-\t-\t-\t-\t-\tnever\t-\tstored login expired; log in to Claude Code as b and run fasthands add\n") {
 		t.Fatalf("wrong human status: %q", out)
 	}
 	if _, err := os.Stat(filepath.Join(f.fast, "state", "usage.lock")); err != nil {

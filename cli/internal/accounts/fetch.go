@@ -21,7 +21,7 @@ type FetchResult struct {
 	Error       string `json:"error"`
 }
 
-func (m Manager) Fetch(ids []string, live string, liveBlob []byte, client oauth.Client) []FetchResult {
+func (m Manager) Fetch(ids []string, live string, liveBlob []byte, client oauth.Client, loc claudecfg.Locations) []FetchResult {
 	metadata, readErr := m.Read()
 	results := make([]FetchResult, len(ids))
 	var workers sync.WaitGroup
@@ -61,8 +61,26 @@ func (m Manager) Fetch(ids []string, live string, liveBlob []byte, client oauth.
 			}
 			at := now()
 			if token == "" || expires <= at.Add(60*time.Second).UnixMilli() {
-				result.Skipped = "access token expired" // O5: allow Claude a 60s safety margin.
-				return
+				if id == live {
+					result.Skipped = "access token expired" // R1: Claude owns the live login's rotation.
+					return
+				}
+				blob, err = m.RefreshIdle(id, client, loc)
+				if err != nil {
+					var skipped refreshSkip
+					if errors.As(err, &skipped) {
+						result.Skipped = skipped.Error()
+					} else {
+						result.Error = err.Error()
+					}
+					return
+				}
+				token, expires, err = claudecfg.AccessToken(blob)
+				at = now()
+				if err != nil || token == "" || expires <= at.Add(60*time.Second).UnixMilli() {
+					result.Skipped = "access token expired" // O5: refreshed tokens still need the 60s margin.
+					return
+				}
 			}
 			store := usage.Store{Directory: m.Paths.State}
 			ok, reason, err := store.Reserve(id, at.Unix())

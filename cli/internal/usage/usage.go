@@ -32,9 +32,11 @@ type Windows struct {
 
 type Account struct {
 	Windows
-	Source       string  `json:"source"`
-	Requests     []int64 `json:"requests,omitempty"`
-	BlockedUntil int64   `json:"blockedUntil,omitempty"`
+	Source         string  `json:"source"`
+	Requests       []int64 `json:"requests,omitempty"`
+	BlockedUntil   int64   `json:"blockedUntil,omitempty"`
+	DeadRefresh    string  `json:"deadRefresh,omitempty"`
+	RefreshRetryAt int64   `json:"refreshRetryAt,omitempty"`
 }
 
 type Session struct {

@@ -21,9 +21,9 @@ import (
 
 func usageServer(t *testing.T, handler http.HandlerFunc) {
 	t.Helper()
-	oldURL, oldTransport := usageURL, http.DefaultTransport
-	usageURL, http.DefaultTransport = "http://usage.test", usageTransport(handler)
-	t.Cleanup(func() { usageURL, http.DefaultTransport = oldURL, oldTransport })
+	oldURL, oldTokenURL, oldTransport := usageURL, tokenURL, http.DefaultTransport
+	usageURL, tokenURL, http.DefaultTransport = "http://usage.test", "http://token.test", usageTransport(handler)
+	t.Cleanup(func() { usageURL, tokenURL, http.DefaultTransport = oldURL, oldTokenURL, oldTransport })
 }
 
 type usageTransport http.HandlerFunc
@@ -54,14 +54,14 @@ func assertUsagePrivate(t *testing.T, f commandSwitchFixture, output string) {
 		output += string(data)
 	}
 	assertOutputPrivate(t, output)
-	for _, secret := range []string{"second-access-private", "second-refresh-private", "second-device-private", "distinctive-response-private"} {
+	for _, secret := range []string{"second-access-private", "second-refresh-private", "second-device-private", "distinctive-response-private", "command-rotated-access-private", "command-rotated-refresh-private"} {
 		if strings.Contains(output, secret) {
 			t.Fatal("usage command exposed credentials or response text")
 		}
 	}
 }
 
-// Slice 4b1 invariants 8, 10: JSON and human output match on both credential backends.
+// Slice 4b2 invariants 3, 5, 10: refresh rotates idle credentials on both backends.
 func TestRefreshCommand(t *testing.T) {
 	for _, targetPlatform := range []string{"linux", "darwin"} {
 		t.Run(targetPlatform, func(t *testing.T) {
@@ -73,10 +73,15 @@ func TestRefreshCommand(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			calls := 0
+			var calls, tokenCalls atomic.Int32
 			usageServer(t, func(w http.ResponseWriter, r *http.Request) {
-				calls++
-				if r.Header.Get("Authorization") != "Bearer cli-access-private" || !strings.HasPrefix(r.UserAgent(), "fasthands/") {
+				if r.URL.Host == "token.test" {
+					tokenCalls.Add(1)
+					io.WriteString(w, `{"access_token":"command-rotated-access-private","refresh_token":"command-rotated-refresh-private","expires_in":28800}`)
+					return
+				}
+				calls.Add(1)
+				if (r.Header.Get("Authorization") != "Bearer cli-access-private" && r.Header.Get("Authorization") != "Bearer command-rotated-access-private") || !strings.HasPrefix(r.UserAgent(), "fasthands/") {
 					t.Error("command used wrong live token or User-Agent")
 				}
 				io.WriteString(w, `{"five_hour":{"utilization":12,"resets_at":null}}`)
@@ -88,11 +93,11 @@ func TestRefreshCommand(t *testing.T) {
 			var shape struct {
 				Results []map[string]json.RawMessage `json:"results"`
 			}
-			if code != 0 || stderr != "" || json.Unmarshal([]byte(out), &result) != nil || json.Unmarshal([]byte(out), &shape) != nil || len(result.Results) != 2 || calls != 1 {
+			if code != 0 || stderr != "" || json.Unmarshal([]byte(out), &result) != nil || json.Unmarshal([]byte(out), &shape) != nil || len(result.Results) != 2 || calls.Load() != 2 || tokenCalls.Load() != 1 {
 				t.Fatalf("refresh failed: %d %q %q", code, out, stderr)
 			}
 			a, b := result.Results[0], result.Results[1]
-			if a.Alias != "a" || !a.Fetched || a.Error != "" || a.Skipped != "" || b.Alias != "b" || b.Fetched || b.Skipped != "access token expired" || b.Error != "" {
+			if a.Alias != "a" || !a.Fetched || a.Error != "" || a.Skipped != "" || b.Alias != "b" || !b.Fetched || b.Skipped != "" || b.Error != "" {
 				t.Fatal("refresh results differ from contract")
 			}
 			for _, row := range shape.Results {
@@ -103,12 +108,12 @@ func TestRefreshCommand(t *testing.T) {
 			assertUsagePrivate(t, f, out+stderr)
 			if targetPlatform == "darwin" {
 				data, err := os.ReadFile(filepath.Join(f.keychain, "calls"))
-				if err != nil || strings.Count(string(data), f.loc.Service+"/") != 1 || strings.Contains(string(data), "add-generic-password") {
-					t.Fatal("refresh must read live login once and never write Keychain")
+				if err != nil || strings.Count(string(data), f.loc.Service+"/") != 1 || strings.Count(string(data), "add-generic-password") != 2 {
+					t.Fatal("refresh must read live login once and write both backup generations")
 				}
 			}
 			code, out, stderr = invoke("refresh", "a")
-			if code != 0 || out != "a\tfetched\n" || stderr != "" || calls != 2 {
+			if code != 0 || out != "a\tfetched\n" || stderr != "" || calls.Load() != 3 {
 				t.Fatal("wrong refresh human success output")
 			}
 			assertUsagePrivate(t, f, out+stderr)

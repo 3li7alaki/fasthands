@@ -27,6 +27,7 @@ const usage = "usage: fasthands {add [--alias NAME] | ls | switch ALIAS [--wait 
 var platform = runtime.GOOS
 var securityPath = "/usr/bin/security"
 var usageURL = "https://api.anthropic.com/api/oauth/usage"
+var tokenURL = "https://platform.claude.com/v1/oauth/token"
 var claudeLockTimeout = 10 * time.Second
 
 func main() {
@@ -231,6 +232,6 @@ func fetchUsage(m accounts.Manager, ids []string, loc claudecfg.Locations, live 
 		}
 	}
 	return m.Fetch(ids, live, blob, oauth.Client{
-		UsageURL: usageURL, UserAgent: "fasthands/" + version.Version, HTTP: &http.Client{},
-	})
+		UsageURL: usageURL, TokenURL: tokenURL, UserAgent: "fasthands/" + version.Version, HTTP: &http.Client{},
+	}, loc)
 }

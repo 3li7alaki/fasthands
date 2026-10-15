@@ -37,7 +37,7 @@ func fetchBlob(token string, expires int64) []byte {
 
 func fetchClient(t *testing.T, handler http.HandlerFunc) oauth.Client {
 	t.Helper()
-	return oauth.Client{UsageURL: "http://usage.test", UserAgent: "fasthands/dev", HTTP: &http.Client{Transport: fetchTransport(handler)}}
+	return oauth.Client{UsageURL: "http://usage.test", TokenURL: "http://token.test", UserAgent: "fasthands/dev", HTTP: &http.Client{Transport: fetchTransport(handler)}}
 }
 
 type fetchTransport http.HandlerFunc
@@ -88,7 +88,7 @@ func TestFetchPersistsBeforeRequest(t *testing.T) {
 		}
 		io.WriteString(w, `{"five_hour":{"utilization":12,"resets_at":null}}`)
 	})
-	results := f.m.Fetch([]string{"id-b"}, "id-a", nil, client)
+	results := f.m.Fetch([]string{"id-b"}, "id-a", nil, client, f.loc)
 	if len(results) != 1 || !results[0].Fetched || results[0].Error != "" || results[0].Skipped != "" {
 		t.Fatalf("fetch failed: %+v", results)
 	}
@@ -124,7 +124,7 @@ func TestFetchConcurrentSources(t *testing.T) {
 				case <-r.Context().Done():
 				}
 			})
-			results := f.m.Fetch([]string{"id-b", "id-a"}, "id-a", fetchBlob("live-fetch-private", (fetchNow+3600)*1000), client)
+			results := f.m.Fetch([]string{"id-b", "id-a"}, "id-a", fetchBlob("live-fetch-private", (fetchNow+3600)*1000), client, f.loc)
 			if len(results) != 2 || results[0].Alias != "a" || results[1].Alias != "b" || !results[0].Fetched || !results[1].Fetched || arrivals.Load() != 2 {
 				t.Fatalf("fetch did not run concurrently or sort results: %+v", results)
 			}
@@ -144,7 +144,7 @@ func TestFetchRateLimitBlocks(t *testing.T) {
 				w.WriteHeader(http.StatusTooManyRequests)
 			})
 			blob := fetchBlob("limited-access-private", (fetchNow+7200)*1000)
-			first := f.m.Fetch([]string{"id-a"}, "id-a", blob, client)[0]
+			first := f.m.Fetch([]string{"id-a"}, "id-a", blob, client, f.loc)[0]
 			until := fetchNow + 3600
 			if retry == "120" {
 				until = fetchNow + 120 + 900
@@ -154,7 +154,7 @@ func TestFetchRateLimitBlocks(t *testing.T) {
 			if err != nil || first.Error != want || first.Fetched || first.Skipped != "" || state.Accounts["id-a"].BlockedUntil != until || len(state.Accounts["id-a"].Requests) != 1 {
 				t.Fatalf("wrong rate limit block: %+v, %v", first, err)
 			}
-			second := f.m.Fetch([]string{"id-a"}, "id-a", blob, client)[0]
+			second := f.m.Fetch([]string{"id-a"}, "id-a", blob, client, f.loc)[0]
 			if second.Error != "" || second.Skipped != "blocked until "+time.Unix(until, 0).Local().Format("15:04") || calls != 1 {
 				t.Fatal("blocked account sent another request")
 			}
@@ -178,9 +178,13 @@ func TestFetchExpiryMargin(t *testing.T) {
 				if live {
 					id = "id-a"
 				}
-				result := f.m.Fetch([]string{id}, "id-a", blob, client)[0]
+				result := f.m.Fetch([]string{id}, "id-a", blob, client, f.loc)[0]
 				if margin <= 60000 {
-					if calls != 0 || result.Skipped != "access token expired" || result.Error != "" {
+					want := "access token expired"
+					if !live {
+						want = "stored login expired; log in to Claude Code as b and run fasthands add"
+					}
+					if calls != 0 || result.Skipped != want || result.Error != "" {
 						t.Fatal("expired token sent a request or failed to skip")
 					}
 					state, err := (usage.Store{Directory: f.m.Paths.State}).Read()
@@ -242,7 +246,7 @@ func TestFetchCredentialRefusals(t *testing.T) {
 					message = fmt.Sprintf("invalid usage at %q", filepath.Join(f.m.Paths.State, "usage.json"))
 				}
 				client := fetchClient(t, func(w http.ResponseWriter, r *http.Request) { t.Error("refused account sent HTTP") })
-				result := f.m.Fetch([]string{id}, "id-a", nil, client)[0]
+				result := f.m.Fetch([]string{id}, "id-a", nil, client, f.loc)[0]
 				if result.Skipped != skip || result.Error != message || result.Fetched {
 					t.Fatalf("wrong credential refusal: %+v", result)
 				}
@@ -262,7 +266,7 @@ func TestFetchHTTPFailures(t *testing.T) {
 				w.WriteHeader(status)
 				io.WriteString(w, "failure-access-private distinctive-body-private")
 			})
-			result := f.m.Fetch([]string{"id-a"}, "id-a", fetchBlob("failure-access-private", (fetchNow+3600)*1000), client)[0]
+			result := f.m.Fetch([]string{"id-a"}, "id-a", fetchBlob("failure-access-private", (fetchNow+3600)*1000), client, f.loc)[0]
 			want := "access token rejected"
 			if status == 500 {
 				want = "usage request returned HTTP 500"
