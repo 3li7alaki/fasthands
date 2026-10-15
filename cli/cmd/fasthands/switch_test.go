@@ -172,7 +172,7 @@ func TestSwitchCommandUsage(t *testing.T) {
 		{"switch"}, {"switch", "--json"}, {"switch", "a", "b"}, {"switch", "BAD"},
 		{"switch", "a.b"}, {"switch", "a", "--json=invalid"}, {"switch", "a", "--alias", "b"},
 		{"switch", "a", "--wait", "invalid"}, {"switch", "a", "--wait", "-1s"},
-		{"switch", "a", "--wait"}, {"switch", "a", "--force=invalid"},
+		{"switch", "a", "--wait"}, {"switch", "a", "--force"},
 	} {
 		code, out, err := invoke(args...)
 		if code != 2 || out != "" || err == "" {
@@ -204,9 +204,7 @@ func TestSwitchCommandMidTurn(t *testing.T) {
 					alias = "a"
 				}
 				args := []string{"switch", alias}
-				if strings.HasPrefix(mode, "force") {
-					args = append(args, "--force")
-				} else if mode != "already" {
+				if !strings.HasPrefix(mode, "force") && mode != "already" {
 					args = append(args, "--wait", "0")
 				}
 				if strings.HasSuffix(mode, "json") {
@@ -221,7 +219,7 @@ func TestSwitchCommandMidTurn(t *testing.T) {
 				code, out, err := invoke(args...)
 				message := "1 Claude session(s) mid-turn: unreadable record " + path
 				if strings.HasPrefix(mode, "refuse") {
-					if code != 1 || out != "" || err != message+"; retry when they finish, or pass --wait or --force\n" {
+					if code != 1 || out != "" || err != message+"; retry when they finish, or switch without --wait to switch now\n" {
 						t.Fatal("mid-turn command refusal must use stderr and exit 1")
 					}
 				} else if mode == "force-json" {

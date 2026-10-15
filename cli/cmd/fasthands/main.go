@@ -22,7 +22,7 @@ import (
 	"fasthands/internal/version"
 )
 
-const usage = "usage: fasthands {add [--alias NAME] | ls | switch ALIAS [--wait DURATION] [--force] | refresh [ALIAS...] | status | hook statusline} [--json]\n       fasthands [--version] [--help] [--json]"
+const usage = "usage: fasthands {add [--alias NAME] | ls | switch ALIAS [--wait DURATION] | refresh [ALIAS...] | status | hook statusline} [--json]\n       fasthands [--version] [--help] [--json]"
 
 var platform = runtime.GOOS
 var securityPath = "/usr/bin/security"
@@ -63,13 +63,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 	fs.Usage = func() {}
 	jsonMode := fs.Bool("json", false, "print JSON")
 	var alias string
-	options := accounts.SwitchOptions{Wait: 60 * time.Second}
+	var options accounts.SwitchOptions
 	if args[0] == "add" {
 		fs.StringVar(&alias, "alias", "", "account alias")
 	}
 	if args[0] == "switch" {
-		fs.DurationVar(&options.Wait, "wait", options.Wait, "wait for mid-turn Claude sessions")
-		fs.BoolVar(&options.Force, "force", false, "switch over mid-turn Claude sessions")
+		fs.DurationVar(&options.Wait, "wait", 0, "wait for mid-turn Claude sessions, then refuse")
 	}
 	parseArgs := args[1:]
 	var aliases []string
@@ -98,8 +97,14 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, usage)
 		return 2
 	}
-	aliasGiven := false
-	fs.Visit(func(f *flag.Flag) { aliasGiven = aliasGiven || f.Name == "alias" })
+	aliasGiven, waitGiven := false, false
+	fs.Visit(func(f *flag.Flag) {
+		aliasGiven = aliasGiven || f.Name == "alias"
+		waitGiven = waitGiven || f.Name == "wait"
+	})
+	// Switch at once by default, as Claude's own /login does: running sessions pick the
+	// new login up on their next request, mid-turn or not. --wait keeps a turn on one account.
+	options.Force = !waitGiven
 	remaining := fs.NArg()
 	if args[0] == "switch" && alias == "" && remaining == 1 {
 		alias, remaining = fs.Arg(0), 0

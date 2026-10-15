@@ -128,7 +128,7 @@ func (m Manager) switchAccount(alias string, loc claudecfg.Locations, platform, 
 	if mid := othersMidTurn(sessions); len(mid) != 0 {
 		message := midTurnMessage(mid)
 		if !options.Force {
-			return SwitchResult{}, errors.New(message + "; retry when they finish, or pass --wait or --force")
+			return SwitchResult{}, errors.New(message + "; retry when they finish, or switch without --wait to switch now")
 		}
 		result.Warnings = append(result.Warnings, message)
 	}

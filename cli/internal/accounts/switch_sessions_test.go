@@ -81,7 +81,7 @@ func TestSwitchMidTurnRefusesWithoutWrites(t *testing.T) {
 			before := f.snapshot(t)
 			beforeSwitchWrite = func(string) { t.Fatal("mid-turn refusal attempted a write") }
 			_, err := f.m.Switch("b", f.loc, platform, f.security, SwitchOptions{})
-			want := "1 Claude session(s) mid-turn: pid 42 (cwd /work/project); retry when they finish, or pass --wait or --force"
+			want := "1 Claude session(s) mid-turn: pid 42 (cwd /work/project); retry when they finish, or switch without --wait to switch now"
 			if err == nil || err.Error() != want || !reflect.DeepEqual(before, f.snapshot(t)) {
 				t.Fatalf("mid-turn refusal changed state or message: %v", err)
 			}
