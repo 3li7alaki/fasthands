@@ -22,9 +22,14 @@ windows of the models in use): `used` in 0..1 and `resets_at`.
 3. Switch when, outside the `cooldown` (5 min; bypassed when the active account is at
    its limit):
    - the active account's binding window (its highest `used`) reaches `threshold`, or
-   - an eligible account's weekly reset is at least `tie` sooner than the active one's.
-4. Every account at or over `threshold`: move to the account whose binding window
-   resets first, if it resets at least 5 min sooner than the active one's.
+   - an eligible account's weekly reset is at least `tie` sooner than the active one's, or
+   - an eligible account's weekly reset is within `tie` of the active one's and it has a
+     strictly higher priority (one-way, so it cannot flap).
+4. The active account at or over `threshold` with nothing eligible:
+   - another account still under `threshold` (inside the hysteresis band): move to the
+     one with the most weighted headroom on its binding window;
+   - every account at or over `threshold`: move to the account whose binding window
+     resets first, if it resets at least 5 min sooner than the active one's.
 5. Refresh the chosen candidate's usage before acting (it may have been used elsewhere,
    such as a VPS on a setup-token) and re-run the rule on the fresh numbers.
 
