@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"regexp"
 
 	"fasthands/internal/credstore"
 )
@@ -22,16 +23,75 @@ type Capture struct {
 	Credentials      []byte
 }
 
+type Locations struct {
+	ConfigHome      string
+	Base            string
+	StorageDir      string
+	Service         string
+	KeychainAccount string
+	CredentialsFile string
+	GlobalConfig    string
+}
+
+var keychainAccountPattern = regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
+
+func Locate() (Locations, error) {
+	raw, set := os.LookupEnv("CLAUDE_CONFIG_DIR")
+	secure, secureSet := os.LookupEnv("CLAUDE_SECURESTORAGE_CONFIG_DIR")
+	account := os.Getenv("USER")
+	var home string
+	if raw == "" || secureSet && secure == "" {
+		var err error
+		home, err = os.UserHomeDir()
+		if err != nil {
+			return Locations{}, errors.New("cannot locate Claude Code home directory")
+		}
+	}
+	loc := Locations{ConfigHome: raw, Base: raw}
+	if raw == "" {
+		loc.ConfigHome, loc.Base = filepath.Join(home, ".claude"), home
+	}
+	loc.StorageDir = loc.ConfigHome
+	hashValue, hashSet, hashEnv := raw, set, "CLAUDE_CONFIG_DIR"
+	if secureSet {
+		loc.StorageDir = secure
+		if secure == "" {
+			loc.StorageDir = filepath.Join(home, ".claude")
+		}
+		hashValue, hashSet, hashEnv = secure, true, "CLAUDE_SECURESTORAGE_CONFIG_DIR"
+	}
+	service, err := serviceName(hashValue, hashSet, hashEnv)
+	if err != nil {
+		return Locations{}, err
+	}
+	if account == "" {
+		if current, err := user.Current(); err == nil {
+			account = current.Username
+		}
+	}
+	if !keychainAccountPattern.MatchString(account) {
+		account = "claude-code-user"
+	}
+	loc.Service, loc.KeychainAccount = service, account
+	loc.CredentialsFile = filepath.Join(loc.StorageDir, ".credentials.json")
+	loc.GlobalConfig = GlobalConfig(loc.ConfigHome, loc.Base)
+	return loc, nil
+}
+
 func Service(raw string, set bool) (string, error) {
+	return serviceName(raw, set, "CLAUDE_CONFIG_DIR")
+}
+
+func serviceName(raw string, set bool, env string) (string, error) {
 	const service = "Claude Code-credentials"
-	// Claude Code treats an empty CLAUDE_CONFIG_DIR as unset, so it must not be hashed.
+	// L3: an explicitly empty secure-storage override also selects the unsuffixed service.
 	if !set || raw == "" {
 		return service, nil
 	}
 	for i := 0; i < len(raw); i++ {
 		if raw[i] >= 128 {
 			// ponytail: stdlib has no NFC normalization; support non-ASCII only with an NFC implementation.
-			return "", errors.New("CLAUDE_CONFIG_DIR must be ASCII for Keychain service hashing (NFC normalization unavailable)")
+			return "", fmt.Errorf("%s must be ASCII for Keychain service hashing (NFC normalization unavailable)", env)
 		}
 	}
 	hash := sha256.Sum256([]byte(raw))
@@ -55,35 +115,20 @@ func GlobalConfig(configHome, base string) string {
 }
 
 func Read(platform, securityPath string) (Capture, error) {
-	raw, set := os.LookupEnv("CLAUDE_CONFIG_DIR")
-	base := raw
-	configHome := raw
-	if raw == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return Capture{}, errors.New("cannot locate Claude Code home directory")
-		}
-		base, configHome = home, filepath.Join(home, ".claude")
+	loc, err := Locate()
+	if err != nil {
+		return Capture{}, err
 	}
-	path := filepath.Join(configHome, ".credentials.json")
+	path := loc.CredentialsFile
 	source := path
 	var blob []byte
-	var err error
 	if platform == "darwin" {
-		service, serviceErr := Service(raw, set)
-		if serviceErr != nil {
-			return Capture{}, serviceErr
-		}
-		current, userErr := user.Current()
-		if userErr != nil {
-			return Capture{}, errors.New("cannot determine current Keychain username")
-		}
-		blob, err = (credstore.Keychain{SecurityPath: securityPath}).Read(current.Username, service)
+		blob, err = (credstore.Keychain{SecurityPath: securityPath}).Read(loc.KeychainAccount, loc.Service)
 		if err != nil && !errors.Is(err, credstore.ErrAbsent) {
 			return Capture{}, err
 		}
 		if err == nil {
-			source = "Keychain service " + service
+			source = "Keychain service " + loc.Service
 		}
 	}
 	if platform != "darwin" || errors.Is(err, credstore.ErrAbsent) {
@@ -96,7 +141,7 @@ func Read(platform, securityPath string) (Capture, error) {
 	if err != nil {
 		return Capture{}, fmt.Errorf("invalid Claude Code login at %q", source)
 	}
-	global := GlobalConfig(configHome, base)
+	global := loc.GlobalConfig
 	data, err := os.ReadFile(global)
 	if err != nil {
 		return Capture{}, fmt.Errorf("cannot read global config at %q", global)

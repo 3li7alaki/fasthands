@@ -157,6 +157,7 @@ func TestInvalidCredentials(t *testing.T) {
 }
 
 func TestReadDefaultAndOverrideLocations(t *testing.T) {
+	optionalEnv(t, "CLAUDE_SECURESTORAGE_CONFIG_DIR", "", false)
 	for _, mode := range []string{"unset", "empty", "override"} {
 		t.Run(mode, func(t *testing.T) {
 			base := t.TempDir()
@@ -189,11 +190,14 @@ func TestReadDefaultAndOverrideLocations(t *testing.T) {
 }
 
 func TestMacKeychainFallbackOnlyOnAbsent(t *testing.T) {
+	t.Setenv("USER", "")
 	for _, code := range []string{"0", "44", "1"} {
 		t.Run(code, func(t *testing.T) {
 			dir := t.TempDir()
+			storage := t.TempDir()
 			t.Setenv("CLAUDE_CONFIG_DIR", dir)
-			write(t, filepath.Join(dir, ".credentials.json"), credentials)
+			t.Setenv("CLAUDE_SECURESTORAGE_CONFIG_DIR", storage)
+			write(t, filepath.Join(storage, ".credentials.json"), credentials)
 			write(t, filepath.Join(dir, ".config.json"), identity)
 			keychainBlob := strings.Replace(credentials, "capture-access-private", "keychain-access-private", 1)
 			write(t, filepath.Join(dir, "reply"), keychainBlob)
@@ -225,14 +229,16 @@ func TestMacKeychainFallbackOnlyOnAbsent(t *testing.T) {
 				t.Fatal(userErr)
 			}
 			args, _ := os.ReadFile(filepath.Join(dir, "argv"))
-			if !strings.Contains(string(args), "\n"+current.Username+"\n") {
-				t.Fatal("Keychain read must use os/user username")
+			service, _ := Service(storage, true)
+			if string(args) != "find-generic-password\n-a\n"+current.Username+"\n-s\n"+service+"\n-w\n" {
+				t.Fatal("Keychain read must use resolved service and fallback username")
 			}
 		})
 	}
 }
 
 func TestInvalidIdentityAndSafeErrors(t *testing.T) {
+	optionalEnv(t, "CLAUDE_SECURESTORAGE_CONFIG_DIR", "", false)
 	for _, config := range []string{`not-json-capture-access-private`, `{}`, `{"oauthAccount":null}`, `{"oauthAccount":{"accountUuid":""}}`, `{"oauthAccount":{"accountUuid":123}}`, `{"OAuthAccount":{"accountUuid":"id"}}`, `{"oauthAccount":{"AccountUuid":"id"}}`} {
 		dir := t.TempDir()
 		t.Setenv("CLAUDE_CONFIG_DIR", dir)
@@ -241,6 +247,134 @@ func TestInvalidIdentityAndSafeErrors(t *testing.T) {
 		_, err := Read("linux", "/unused")
 		if err == nil || !strings.Contains(err.Error(), filepath.Join(dir, ".config.json")) || strings.Contains(err.Error(), "private") {
 			t.Fatal("invalid identity must fail without quoting config")
+		}
+	}
+}
+
+func TestLocateEnvironment(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	for _, config := range []struct {
+		name, value, suffix string
+		set                 bool
+	}{
+		{"unset", "", "", false},
+		{"empty", "", "", true},
+		{"path", "/Users/3li/.claude-work", "-ade7974e", true},
+	} {
+		for _, secure := range []struct {
+			name, value string
+			set         bool
+		}{
+			{"unset", "", false}, {"empty", "", true}, {"path", "/tmp/fh test", true},
+		} {
+			t.Run(config.name+"/"+secure.name, func(t *testing.T) {
+				optionalEnv(t, "CLAUDE_CONFIG_DIR", config.value, config.set)
+				optionalEnv(t, "CLAUDE_SECURESTORAGE_CONFIG_DIR", secure.value, secure.set)
+				configHome, base := config.value, config.value
+				if config.value == "" {
+					configHome, base = filepath.Join(home, ".claude"), home
+				}
+				storage, suffix := configHome, config.suffix
+				if secure.set {
+					storage, suffix = filepath.Join(home, ".claude"), ""
+					if secure.value != "" {
+						storage, suffix = secure.value, "-2d0e408f"
+					}
+				}
+				loc, err := Locate()
+				if err != nil || loc.ConfigHome != configHome || loc.Base != base ||
+					loc.StorageDir != storage || loc.Service != "Claude Code-credentials"+suffix ||
+					loc.CredentialsFile != filepath.Join(storage, ".credentials.json") ||
+					loc.GlobalConfig != filepath.Join(base, ".claude.json") {
+					t.Fatalf("wrong locations: %+v, %v", loc, err)
+				}
+			})
+		}
+	}
+}
+
+func TestLocateKeychainAccount(t *testing.T) {
+	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
+	optionalEnv(t, "CLAUDE_SECURESTORAGE_CONFIG_DIR", "", false)
+	fallback := "claude-code-user"
+	if current, err := user.Current(); err == nil && keychainAccountPattern.MatchString(current.Username) {
+		fallback = current.Username
+	}
+	for _, tt := range []struct{ name, want string }{
+		{"Person_1.test-2", "Person_1.test-2"}, {"", fallback}, {"bad name", "claude-code-user"},
+		{"bad\nname", "claude-code-user"}, {"caf\u00e9", "claude-code-user"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("USER", tt.name)
+			loc, err := Locate()
+			if err != nil || loc.KeychainAccount != tt.want {
+				t.Fatalf("wrong Keychain account: %q, %v", loc.KeychainAccount, err)
+			}
+		})
+	}
+}
+
+func TestLocateHomeAndHashErrors(t *testing.T) {
+	t.Setenv("HOME", "")
+	t.Setenv("CLAUDE_CONFIG_DIR", "/config")
+	optionalEnv(t, "CLAUDE_SECURESTORAGE_CONFIG_DIR", "", false)
+	if _, err := Locate(); err != nil {
+		t.Fatal("explicit directories must not require HOME")
+	}
+	t.Setenv("CLAUDE_SECURESTORAGE_CONFIG_DIR", "")
+	if _, err := Locate(); err == nil || !strings.Contains(err.Error(), "home directory") {
+		t.Fatal("empty secure-storage override requires HOME")
+	}
+	t.Setenv("HOME", t.TempDir())
+	for _, tt := range []struct {
+		config, secure, wantEnv string
+		secureSet               bool
+	}{
+		{"/tmp/caf\u00e9-capture-access-private", "", "CLAUDE_CONFIG_DIR", false},
+		{"/config", "/tmp/cafe\u0301-capture-access-private", "CLAUDE_SECURESTORAGE_CONFIG_DIR", true},
+		{"/config", "/tmp/\xff", "CLAUDE_SECURESTORAGE_CONFIG_DIR", true},
+		{"/tmp/caf\u00e9", "", "", true},
+		{"/tmp/caf\u00e9", "/tmp/fh test", "", true},
+	} {
+		t.Setenv("CLAUDE_CONFIG_DIR", tt.config)
+		optionalEnv(t, "CLAUDE_SECURESTORAGE_CONFIG_DIR", tt.secure, tt.secureSet)
+		_, err := Locate()
+		if tt.wantEnv == "" {
+			if err != nil {
+				t.Fatal("only the hashed value must be ASCII")
+			}
+		} else if err == nil || !strings.Contains(err.Error(), tt.wantEnv) ||
+			!strings.Contains(err.Error(), "NFC") || strings.Contains(err.Error(), "private") {
+			t.Fatal("hash refusal must identify the variable without quoting its value")
+		}
+	}
+	t.Setenv("HOME", "")
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	t.Setenv("CLAUDE_SECURESTORAGE_CONFIG_DIR", "/storage")
+	if _, err := Locate(); err == nil {
+		t.Fatal("default config home requires HOME even with explicit storage")
+	}
+}
+
+func TestReadInvalidStorageCredentialsSafeError(t *testing.T) {
+	config, storage := t.TempDir(), t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_DIR", config)
+	t.Setenv("CLAUDE_SECURESTORAGE_CONFIG_DIR", storage)
+	path := filepath.Join(storage, ".credentials.json")
+	write(t, path, "not-json-capture-access-private-capture-refresh-private")
+	_, err := Read("linux", "/unused")
+	if err == nil || !strings.Contains(err.Error(), path) || strings.Contains(err.Error(), "private") {
+		t.Fatal("invalid login must name storage path without quoting credentials")
+	}
+}
+
+func optionalEnv(t *testing.T, name, value string, set bool) {
+	t.Helper()
+	t.Setenv(name, value)
+	if !set {
+		if err := os.Unsetenv(name); err != nil {
+			t.Fatal(err)
 		}
 	}
 }

@@ -29,6 +29,10 @@ func setupActive(t *testing.T) (string, string) {
 	}
 	t.Setenv("HOME", root)
 	t.Setenv("CLAUDE_CONFIG_DIR", home)
+	t.Setenv("CLAUDE_SECURESTORAGE_CONFIG_DIR", "")
+	if err := os.Unsetenv("CLAUDE_SECURESTORAGE_CONFIG_DIR"); err != nil {
+		t.Fatal(err)
+	}
 	t.Setenv("FASTHANDS_HOME", fast)
 	writeFixture(t, filepath.Join(home, ".credentials.json"), activeBlob)
 	writeFixture(t, filepath.Join(home, ".config.json"), activeIdentity)
@@ -100,6 +104,24 @@ func TestHumanAdd(t *testing.T) {
 	code, out, err := invoke("add", "--alias", "home")
 	if code != 0 || err != "" || out != "added home (Person@example.com)\n" {
 		t.Fatal("human add output differs from contract")
+	}
+}
+
+func TestAddReadsSeparateStorage(t *testing.T) {
+	home, fast := setupActive(t)
+	storage := t.TempDir()
+	t.Setenv("CLAUDE_SECURESTORAGE_CONFIG_DIR", storage)
+	writeFixture(t, filepath.Join(home, ".credentials.json"), "not-json-cli-access-private")
+	writeFixture(t, filepath.Join(storage, ".credentials.json"), activeBlob)
+	code, out, err := invoke("add", "--json")
+	var result accounts.Result
+	if code != 0 || err != "" || json.Unmarshal([]byte(out), &result) != nil || result.Store != "file" {
+		t.Fatal("add must capture credentials from secure-storage override")
+	}
+	assertOutputPrivate(t, out+err)
+	backup, readErr := os.ReadFile(filepath.Join(fast, "credentials", result.AccountUUID+".json"))
+	if readErr != nil || !bytes.Contains(backup, []byte("cli-access-private")) {
+		t.Fatal("add did not back up the storage directory login")
 	}
 }
 
@@ -180,6 +202,8 @@ func TestFailedSourceReadChangesNothing(t *testing.T) {
 func TestMacCommandWithFakeSecurity(t *testing.T) {
 	home, fast := setupActive(t)
 	platform = "darwin"
+	t.Setenv("CLAUDE_SECURESTORAGE_CONFIG_DIR", "/tmp/fh test")
+	t.Setenv("USER", "fh.user-1")
 	argvPath, stdinPath := filepath.Join(home, "argv"), filepath.Join(home, "stdin")
 	t.Setenv("FH_ARGS", argvPath)
 	t.Setenv("FH_STDIN", stdinPath)
@@ -198,8 +222,8 @@ func TestMacCommandWithFakeSecurity(t *testing.T) {
 	}
 	assertOutputPrivate(t, out+err)
 	args, readErr := os.ReadFile(argvPath)
-	if readErr != nil || !strings.HasSuffix(string(args), "-i\n") {
-		t.Fatal("macOS add must write through security -i")
+	if readErr != nil || string(args) != "find-generic-password\n-a\nfh.user-1\n-s\nClaude Code-credentials-2d0e408f\n-w\n-i\n" {
+		t.Fatal("macOS add must use resolved read identifiers and write through security -i")
 	}
 	assertOutputPrivate(t, string(args))
 	stdin, readErr := os.ReadFile(stdinPath)
