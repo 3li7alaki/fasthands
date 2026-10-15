@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"runtime"
 	"strings"
@@ -16,14 +17,16 @@ import (
 	"fasthands/internal/claudecfg"
 	"fasthands/internal/claudelock"
 	"fasthands/internal/credstore"
+	"fasthands/internal/oauth"
 	"fasthands/internal/statehome"
 	"fasthands/internal/version"
 )
 
-const usage = "usage: fasthands {add [--alias NAME] | ls | switch ALIAS [--wait DURATION] [--force] | status | hook statusline} [--json]\n       fasthands [--version] [--help] [--json]"
+const usage = "usage: fasthands {add [--alias NAME] | ls | switch ALIAS [--wait DURATION] [--force] | refresh [ALIAS...] | status | hook statusline} [--json]\n       fasthands [--version] [--help] [--json]"
 
 var platform = runtime.GOOS
 var securityPath = "/usr/bin/security"
+var usageURL = "https://api.anthropic.com/api/oauth/usage"
 var claudeLockTimeout = 10 * time.Second
 
 func main() {
@@ -50,7 +53,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stdout, usage)
 		return 0
 	}
-	if args[0] != "add" && args[0] != "ls" && args[0] != "switch" && args[0] != "status" {
+	if args[0] != "add" && args[0] != "ls" && args[0] != "switch" && args[0] != "status" && args[0] != "refresh" {
 		fmt.Fprintln(stderr, usage)
 		return 2
 	}
@@ -68,6 +71,21 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fs.BoolVar(&options.Force, "force", false, "switch over mid-turn Claude sessions")
 	}
 	parseArgs := args[1:]
+	var aliases []string
+	if args[0] == "refresh" {
+		parseArgs = nil
+		for i, arg := range args[1:] {
+			if arg == "--" {
+				aliases = append(aliases, args[i+2:]...)
+				break
+			}
+			if strings.HasPrefix(arg, "-") {
+				parseArgs = append(parseArgs, arg)
+			} else {
+				aliases = append(aliases, arg)
+			}
+		}
+	}
 	if args[0] == "switch" && len(parseArgs) > 0 && !strings.HasPrefix(parseArgs[0], "-") {
 		alias, parseArgs = parseArgs[0], parseArgs[1:]
 	}
@@ -95,6 +113,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	m := accounts.Manager{Paths: paths, Store: credstore.New(platform, securityPath, paths.Credentials)}
+	if args[0] == "refresh" {
+		return refresh(m, aliases, *jsonMode, stdout, stderr)
+	}
 	if args[0] == "status" {
 		return status(m, *jsonMode, stdout, stderr)
 	}
@@ -199,4 +220,17 @@ func outputJSON(stdout, stderr io.Writer, value any) int {
 		return 1
 	}
 	return 0
+}
+
+func fetchUsage(m accounts.Manager, ids []string, loc claudecfg.Locations, live string) []accounts.FetchResult {
+	var blob []byte
+	for _, id := range ids {
+		if id == live {
+			blob, _, _ = claudecfg.ReadLive(loc, platform, securityPath)
+			break
+		}
+	}
+	return m.Fetch(ids, live, blob, oauth.Client{
+		UsageURL: usageURL, UserAgent: "fasthands/" + version.Version, HTTP: &http.Client{},
+	})
 }

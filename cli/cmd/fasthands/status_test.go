@@ -200,7 +200,7 @@ func TestStatusJSON(t *testing.T) {
 		t.Fatalf("status JSON failed: %s", stderr)
 	}
 	b, a := result.Accounts[0], result.Accounts[1]
-	if len(b) != 9 || string(b["alias"]) != `"b"` || string(b["accountUuid"]) != `"second-id"` || string(b["active"]) != `true` ||
+	if len(b) != 11 || string(b["models"]) != `{}` || string(b["note"]) != `""` || string(b["alias"]) != `"b"` || string(b["accountUuid"]) != `"second-id"` || string(b["active"]) != `true` ||
 		string(b["source"]) != `"statusline"` || string(b["seenAt"]) != "1792069820" || string(b["subscriptionType"]) != `""` || string(b["rateLimitTier"]) != `""` {
 		t.Fatal("status account shape or active order differs from contract")
 	}
@@ -216,12 +216,12 @@ func TestStatusJSON(t *testing.T) {
 			t.Fatalf("unknown %s must be null", key)
 		}
 	}
-	if string(a["active"]) != "false" || !reflect.DeepEqual(before, snapshot(t, f.fast)) {
+	if string(a["active"]) != "false" || string(a["note"]) != `"access token expired"` || !reflect.DeepEqual(before, snapshot(t, f.fast)) {
 		t.Fatal("status changed state")
 	}
 	calls, err := os.ReadFile(filepath.Join(f.keychain, "calls"))
-	if err != nil || len(calls) != 0 {
-		t.Fatal("status invoked security")
+	if err != nil || string(calls) != "argv find-generic-password fasthands/12345678-1234-1234-1234-123456789abc\n" {
+		t.Fatal("status must read only the stale idle account's backup")
 	}
 }
 
@@ -252,8 +252,8 @@ func TestStatusHuman(t *testing.T) {
 	}
 	fiveReset := time.Unix(1792080000, 0).UTC().Format("15:04")
 	weekReset := time.Unix(1792400000, 0).UTC().Format("Mon 15:04")
-	if !strings.HasPrefix(out, "a\t*\t43%\t"+fiveReset+"\t61.5%\t"+weekReset+"\t+16.1\t0s ago\t-\n") ||
-		!strings.HasSuffix(out, "b\t\t-\t-\t-\t-\t-\tnever\t-\n") {
+	if !strings.HasPrefix(out, "a\t*\t43%\t"+fiveReset+"\t61.5%\t"+weekReset+"\t+16.1\t0s ago\t-\t\n") ||
+		!strings.HasSuffix(out, "b\t\t-\t-\t-\t-\t-\tnever\t-\taccess token expired\n") {
 		t.Fatalf("wrong human status: %q", out)
 	}
 	if _, err := os.Stat(filepath.Join(f.fast, "state", "usage.lock")); err != nil {

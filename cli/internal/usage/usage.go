@@ -25,13 +25,16 @@ type Window struct {
 }
 
 type Windows struct {
-	FiveHour *Window `json:"fiveHour,omitempty"`
-	SevenDay *Window `json:"sevenDay,omitempty"`
+	FiveHour *Window            `json:"fiveHour,omitempty"`
+	SevenDay *Window            `json:"sevenDay,omitempty"`
+	Models   map[string]*Window `json:"models,omitempty"`
 }
 
 type Account struct {
 	Windows
-	Source string `json:"source"`
+	Source       string  `json:"source"`
+	Requests     []int64 `json:"requests,omitempty"`
+	BlockedUntil int64   `json:"blockedUntil,omitempty"`
 }
 
 type Session struct {
@@ -78,7 +81,14 @@ func Effective(w Windows, now int64) Windows {
 		}
 		return &v
 	}
-	return Windows{copyWindow(w.FiveHour, false), copyWindow(w.SevenDay, true)}
+	result := Windows{FiveHour: copyWindow(w.FiveHour, false), SevenDay: copyWindow(w.SevenDay, true)}
+	if len(w.Models) != 0 {
+		result.Models = make(map[string]*Window, len(w.Models))
+		for name, model := range w.Models {
+			result.Models[name] = copyWindow(model, true) // O2: per-model limits are weekly windows too.
+		}
+	}
+	return result
 }
 
 func Pace(sevenDay *Window, now int64) *float64 {

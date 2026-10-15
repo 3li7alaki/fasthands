@@ -237,6 +237,23 @@ func OAuthTokens(blob []byte) (access, refresh string, err error) {
 	return access, refresh, nil
 }
 
+// AccessToken reads O5's expiry without requiring or exposing a refresh token.
+func AccessToken(blob []byte) (token string, expiresAtMs int64, err error) {
+	var object, oauth map[string]json.RawMessage
+	if json.Unmarshal(blob, &object) != nil || object == nil ||
+		json.Unmarshal(object["claudeAiOauth"], &oauth) != nil || oauth == nil {
+		return "", 0, errors.New("invalid OAuth credentials")
+	}
+	token, ok := stringField(oauth, "accessToken")
+	if !ok {
+		return "", 0, errors.New("invalid OAuth credentials")
+	}
+	if expiry, exists := oauth["expiresAt"]; exists && json.Unmarshal(expiry, &expiresAtMs) != nil {
+		return "", 0, errors.New("invalid OAuth credentials")
+	}
+	return token, expiresAtMs, nil
+}
+
 var sharedKeys = []string{"mcpOAuth", "mcpOAuthClientConfig", "mcpXaaIdp", "mcpXaaIdpConfig", "pluginSecrets"}
 
 func stripShared(object map[string]json.RawMessage) {

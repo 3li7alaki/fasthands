@@ -64,15 +64,17 @@ type weeklyWindow struct {
 }
 
 type statusAccount struct {
-	Alias            string        `json:"alias"`
-	AccountUUID      string        `json:"accountUuid"`
-	Active           bool          `json:"active"`
-	FiveHour         *statusWindow `json:"fiveHour"`
-	SevenDay         *weeklyWindow `json:"sevenDay"`
-	SeenAt           *int64        `json:"seenAt"`
-	Source           *string       `json:"source"`
-	SubscriptionType string        `json:"subscriptionType"`
-	RateLimitTier    string        `json:"rateLimitTier"`
+	Alias            string                   `json:"alias"`
+	AccountUUID      string                   `json:"accountUuid"`
+	Active           bool                     `json:"active"`
+	FiveHour         *statusWindow            `json:"fiveHour"`
+	SevenDay         *weeklyWindow            `json:"sevenDay"`
+	SeenAt           *int64                   `json:"seenAt"`
+	Source           *string                  `json:"source"`
+	SubscriptionType string                   `json:"subscriptionType"`
+	RateLimitTier    string                   `json:"rateLimitTier"`
+	Models           map[string]*statusWindow `json:"models"`
+	Note             string                   `json:"note"`
 }
 
 func status(m accounts.Manager, jsonMode bool, stdout, stderr io.Writer) int {
@@ -82,8 +84,9 @@ func status(m accounts.Manager, jsonMode bool, stdout, stderr io.Writer) int {
 		return 1
 	}
 	var live string
+	var loc claudecfg.Locations
 	if len(metadata) != 0 {
-		loc, err := claudecfg.Locate()
+		loc, err = claudecfg.Locate()
 		if err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1
@@ -100,12 +103,32 @@ func status(m accounts.Manager, jsonMode bool, stdout, stderr io.Writer) int {
 		return 1
 	}
 	timestamp := now().Unix()
+	var stale []string
+	for id := range metadata {
+		seen := newestSeenAt(state.Accounts[id].Windows)
+		if seen == 0 || timestamp-seen > 600 {
+			stale = append(stale, id)
+		}
+	}
+	notes := make(map[string]string, len(stale))
+	if len(stale) != 0 {
+		for _, result := range fetchUsage(m, stale, loc, live) {
+			notes[result.AccountUUID] = result.Skipped
+			if result.Error != "" {
+				notes[result.AccountUUID] = result.Error
+			}
+		}
+		if fetched, err := (usageState.Store{Directory: m.Paths.State}).Read(); err == nil {
+			state = fetched
+		}
+	}
 	list := make([]statusAccount, 0, len(metadata))
 	for id, a := range metadata {
 		saved := state.Accounts[id]
 		w := usageState.Effective(saved.Windows, timestamp)
 		row := statusAccount{Alias: a.Alias, AccountUUID: id, Active: id == live,
-			SubscriptionType: a.SubscriptionType, RateLimitTier: a.RateLimitTier}
+			SubscriptionType: a.SubscriptionType, RateLimitTier: a.RateLimitTier,
+			Models: map[string]*statusWindow{}, Note: notes[id]}
 		window := func(w *usageState.Window) *statusWindow {
 			if w == nil {
 				return nil
@@ -120,6 +143,11 @@ func status(m accounts.Manager, jsonMode bool, stdout, stderr io.Writer) int {
 		row.FiveHour = window(w.FiveHour)
 		if weekly := window(w.SevenDay); weekly != nil {
 			row.SevenDay = &weeklyWindow{*weekly, usageState.Pace(w.SevenDay, timestamp)}
+		}
+		for name, model := range w.Models {
+			if model != nil {
+				row.Models[name] = window(model)
+			}
 		}
 		list = append(list, row)
 	}
@@ -172,7 +200,22 @@ func status(m accounts.Manager, jsonMode bool, stdout, stderr io.Writer) int {
 		if plan == "" {
 			plan = "-"
 		}
-		fmt.Fprintf(stdout, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", row.Alias, active, five, weekly, pace, age, plan)
+		fmt.Fprintf(stdout, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", row.Alias, active, five, weekly, pace, age, plan, row.Note)
 	}
 	return 0
+}
+
+func newestSeenAt(w usageState.Windows) int64 {
+	var seen int64
+	for _, window := range []*usageState.Window{w.FiveHour, w.SevenDay} {
+		if window != nil {
+			seen = max(seen, window.SeenAt)
+		}
+	}
+	for _, window := range w.Models {
+		if window != nil {
+			seen = max(seen, window.SeenAt)
+		}
+	}
+	return seen
 }
