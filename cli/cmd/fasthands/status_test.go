@@ -239,7 +239,7 @@ func TestStatusEmptyJSON(t *testing.T) {
 	if err := os.Remove(filepath.Join(home, ".config.json")); err != nil {
 		t.Fatal(err)
 	}
-	if code, out, stderr := invoke("status", "--json"); code != 0 || out != "{\"accounts\":[]}\n" || stderr != "" {
+	if code, out, stderr := invoke("status", "--json"); code != 0 || out != "{\"accounts\":[],\"lastAutoSwitch\":null}\n" || stderr != "" {
 		t.Fatal("empty status must print []")
 	}
 	if _, err := os.Stat(fast); !os.IsNotExist(err) {

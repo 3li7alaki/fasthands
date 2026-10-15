@@ -22,7 +22,7 @@ import (
 	"fasthands/internal/version"
 )
 
-const usage = "usage: fasthands {add [--alias NAME] | ls | switch ALIAS [--wait DURATION] | refresh [ALIAS...] | priority [ALIAS...] | pick | auto --once | status | hook statusline} [--json]\n       fasthands [--version] [--help] [--json]"
+const usage = "usage: fasthands {add [--alias NAME] | ls | switch ALIAS [--wait DURATION] | refresh [ALIAS...] | priority [ALIAS...] | pick | auto [on|off] | auto --once | status | hook statusline} [--json]\n       fasthands [--version] [--help] [--json]"
 
 var platform = runtime.GOOS
 var securityPath = "/usr/bin/security"
@@ -65,6 +65,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	fs.Usage = func() {}
 	jsonMode := fs.Bool("json", false, "print JSON")
 	var alias string
+	var autoAction string
 	var once bool
 	var options accounts.SwitchOptions
 	if args[0] == "auto" {
@@ -95,6 +96,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if args[0] == "switch" && len(parseArgs) > 0 && !strings.HasPrefix(parseArgs[0], "-") {
 		alias, parseArgs = parseArgs[0], parseArgs[1:]
 	}
+	if args[0] == "auto" && len(parseArgs) > 0 && parseArgs[0] != "" && !strings.HasPrefix(parseArgs[0], "-") {
+		autoAction, parseArgs = parseArgs[0], parseArgs[1:]
+	}
 	if err := fs.Parse(parseArgs); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			fmt.Fprintln(stdout, usage)
@@ -115,19 +119,25 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if args[0] == "switch" && alias == "" && remaining == 1 {
 		alias, remaining = fs.Arg(0), 0
 	}
-	if remaining != 0 || options.Wait < 0 || args[0] == "auto" && !once || (aliasGiven || args[0] == "switch") && !accounts.ValidAlias(alias) {
+	if args[0] == "auto" && autoAction == "" && remaining == 1 && fs.Arg(0) != "" {
+		autoAction, remaining = fs.Arg(0), 0
+	}
+	if remaining != 0 || options.Wait < 0 || autoAction != "" && (once || autoAction != "on" && autoAction != "off") || (aliasGiven || args[0] == "switch") && !accounts.ValidAlias(alias) {
 		fmt.Fprintln(stderr, "invalid arguments or alias; alias must match ^[a-z0-9][a-z0-9_-]{0,31}$")
 		return 2
 	}
 	paths, err := statehome.Locate()
 	if err != nil {
 		fmt.Fprintln(stderr, err)
-		if args[0] == "auto" {
+		if args[0] == "auto" && once {
 			return 0
 		}
 		return 1
 	}
 	m := accounts.Manager{Paths: paths, Store: credstore.New(platform, securityPath, paths.Credentials)}
+	if args[0] == "auto" && !once {
+		return autoState(paths.State, autoAction, *jsonMode, stdout, stderr)
+	}
 	if args[0] == "priority" {
 		return priority(m, aliases, *jsonMode, stdout, stderr)
 	}

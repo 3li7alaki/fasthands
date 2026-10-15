@@ -111,7 +111,7 @@ func TestPickOffline(t *testing.T) {
 					if len(args) == 2 {
 						var d picker.Decision
 						var shape map[string]json.RawMessage
-						if json.Unmarshal([]byte(out), &d) != nil || json.Unmarshal([]byte(out), &shape) != nil || len(shape) != 4 || d.Reason == "" || d.From != map[bool]string{true: "", false: "a"}[mode == "unknown"] {
+						if json.Unmarshal([]byte(out), &d) != nil || json.Unmarshal([]byte(out), &shape) != nil || len(shape) != 5 || string(shape["auto"]) != "true" || d.Reason == "" || d.From != map[bool]string{true: "", false: "a"}[mode == "unknown"] {
 							t.Fatal("pick JSON shape or alias wrong")
 						}
 						if mode == "switch" && (d.Action != "switch" || d.To != "b") || mode != "switch" && (d.Action != "hold" || d.To != "") {
@@ -337,7 +337,7 @@ func TestAutoHoldMatchesPick(t *testing.T) {
 
 func TestPickerCommandUsageAndFailures(t *testing.T) {
 	home, _ := setupActive(t)
-	for _, args := range [][]string{{"pick", "extra"}, {"pick", "--json=bad"}, {"auto"}, {"auto", "--once=false"}, {"auto", "--once", "extra"}, {"priority", "--unknown"}} {
+	for _, args := range [][]string{{"pick", "extra"}, {"pick", "--json=bad"}, {"auto", ""}, {"auto", "bad"}, {"auto", "on", "off"}, {"auto", "on", "--once"}, {"auto", "--once", "off"}, {"auto", "--json=bad"}, {"auto", "--once", "extra"}, {"priority", "--unknown"}} {
 		if code, out, stderr := invoke(args...); code != 2 || out != "" || stderr == "" {
 			t.Fatalf("invalid arguments accepted: %v", args)
 		}

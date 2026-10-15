@@ -30,26 +30,30 @@ func statusline(stdin io.Reader, stdout io.Writer) {
 	if err != nil {
 		return
 	}
-	metadata, err := (accounts.Manager{Paths: paths}).Read()
+	metadata, err := (accounts.Manager{Paths: paths}).Pickable(usageState.State{})
 	if err != nil {
 		return
 	}
-	account, ok := metadata[live]
-	if !ok {
+	managed := make(map[string]bool, len(metadata))
+	var alias string
+	for _, a := range metadata {
+		managed[a.ID] = true
+		if a.ID == live {
+			alias = a.Alias
+		}
+	}
+	if !managed[live] {
 		return
 	}
-	fmt.Fprintln(stdout, account.Alias)
+	fmt.Fprintln(stdout, alias)
 	const limit = 1 << 20 // Bound untrusted status line stdin to 1 MiB.
 	data, err := io.ReadAll(io.LimitReader(stdin, limit+1))
 	var sample usageState.Sample
 	if err != nil || len(data) > limit || json.Unmarshal(data, &sample) != nil {
 		return
 	}
-	managed := make(map[string]bool, len(metadata))
-	for id := range metadata {
-		managed[id] = true
-	}
 	_ = (usageState.Store{Directory: paths.State}).Record(sample, live, managed, now().Unix())
+	triggerAuto(paths.State, metadata, live)
 }
 
 type statusWindow struct {
@@ -157,10 +161,12 @@ func status(m accounts.Manager, jsonMode bool, stdout, stderr io.Writer) int {
 		}
 		return list[i].Alias < list[j].Alias
 	})
+	last := lastAutoSwitch(m.Paths.State)
 	if jsonMode {
 		return outputJSON(stdout, stderr, struct {
-			Accounts []statusAccount `json:"accounts"`
-		}{list})
+			Accounts       []statusAccount `json:"accounts"`
+			LastAutoSwitch *autoSwitch     `json:"lastAutoSwitch"`
+		}{list, last})
 	}
 	for _, row := range list {
 		active, five, weekly, pace, age := "", "-\t-", "-\t-", "-", "never"
@@ -201,6 +207,9 @@ func status(m accounts.Manager, jsonMode bool, stdout, stderr io.Writer) int {
 			plan = "-"
 		}
 		fmt.Fprintf(stdout, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", row.Alias, active, five, weekly, pace, age, plan, row.Note)
+	}
+	if last != nil {
+		fmt.Fprintf(stdout, "last auto switch: %s %s -> %s (%s)\n", time.Unix(last.At, 0).Local().Format("Mon 15:04"), last.From, last.To, last.Reason)
 	}
 	return 0
 }

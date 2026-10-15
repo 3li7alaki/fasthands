@@ -131,15 +131,22 @@ func pick(m accounts.Manager, auto, jsonMode bool, stdout, stderr io.Writer) int
 		result := struct {
 			picker.Decision
 			Switched *bool `json:"switched,omitempty"`
+			Auto     *bool `json:"auto,omitempty"`
 		}{Decision: d}
 		if auto {
 			result.Switched = &switched
+		} else {
+			enabled := autoEnabled(m.Paths.State)
+			result.Auto = &enabled
 		}
 		code = outputJSON(stdout, stderr, result)
 	} else if d.Action == "switch" {
 		fmt.Fprintf(stdout, "switch %s -> %s: %s\n", d.From, d.To, d.Reason)
 	} else {
 		fmt.Fprintln(stdout, "hold: "+d.Reason)
+	}
+	if !auto && !jsonMode && !autoEnabled(m.Paths.State) {
+		fmt.Fprintln(stdout, "auto switching off")
 	}
 	for _, warning := range warnings {
 		fmt.Fprintln(stderr, "warning: "+warning)
