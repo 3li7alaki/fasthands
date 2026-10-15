@@ -39,10 +39,17 @@ A `resets_at` already in the past means unknown, never "soonest". Unknown sorts 
   off the soonest-resetting account and waste the quota about to expire; every other
   case is already covered by rule 2.
 
-## Ceiling
+## Mixed plans
 
-Assumes every account is the same plan. A Max account makes `used` fractions
-incomparable; the upgrade is normalising by plan size once that size is known.
+The active account on the user's Mac is Max (`subscriptionType: max`), so plans do mix.
+FEFO ordering (rule 2) and eligibility (rule 1) need no change: each account's own
+quota expires on its own reset, and its own `used` fraction says whether it has room.
+Only cross-account headroom comparisons (the tie-break in rule 2) must weight `1 - used`
+by plan size, read from `rateLimitTier` (stored per account since slice 4a): Pro 1,
+Max 5x 5, Max 20x 20.
+
+Ceiling: those weights are the advertised multipliers, not measured capacity. An unknown
+tier counts as 1 and is shown as `-` in `status`.
 
 ## Sources
 
