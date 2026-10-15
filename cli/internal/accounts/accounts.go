@@ -29,6 +29,7 @@ type Account struct {
 	OAuthAccount     json.RawMessage `json:"oauthAccount"`
 	SubscriptionType string          `json:"subscriptionType,omitempty"`
 	RateLimitTier    string          `json:"rateLimitTier,omitempty"`
+	Priority         int             `json:"priority,omitempty"`
 }
 
 type database struct {
@@ -133,7 +134,7 @@ func (m Manager) Add(c claudecfg.Capture, alias string, aliasGiven bool) (Result
 	if !updated {
 		added = timestamp
 	}
-	db.Accounts[c.AccountUUID] = Account{alias, c.Email, c.OrganizationUUID, added, timestamp, m.Store.Kind(), c.OAuthAccount, c.SubscriptionType, c.RateLimitTier}
+	db.Accounts[c.AccountUUID] = Account{alias, c.Email, c.OrganizationUUID, added, timestamp, m.Store.Kind(), c.OAuthAccount, c.SubscriptionType, c.RateLimitTier, previous.Priority}
 	// Validate encoding before replacing the backup, as add did before plan metadata existed.
 	if _, err := json.Marshal(db); err != nil {
 		return Result{}, errors.New("cannot encode accounts metadata")
