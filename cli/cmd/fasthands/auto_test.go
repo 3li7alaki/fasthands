@@ -380,7 +380,7 @@ func TestAutoStateAndPick(t *testing.T) {
 		}
 		code, out, stderr := invoke("pick", "--json")
 		var shape map[string]json.RawMessage
-		if code != 0 || stderr != "" || json.Unmarshal([]byte(out), &shape) != nil || len(shape) != 5 || string(shape["auto"]) != fmt.Sprint(enabled) || shape["switched"] != nil {
+		if code != 0 || stderr != "" || json.Unmarshal([]byte(out), &shape) != nil || len(shape) != 6 || string(shape["auto"]) != fmt.Sprint(enabled) || shape["switched"] != nil {
 			t.Fatal("wrong pick auto state JSON")
 		}
 	}

@@ -274,3 +274,31 @@ func TestSevenDayNoFlapping(t *testing.T) {
 		t.Fatal("simulation did not exercise switches across weekly resets")
 	}
 }
+
+// Usage-forced switches are urgent; reset-chasing switches may wait for idle sessions.
+func TestUrgency(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		list   []Account
+		target string
+		urgent bool
+	}{
+		{"threshold", []Account{account("a", 92, timestamp+20000), account("b", 20, timestamp+30000)}, "b", true},
+		{"rule 4 band", []Account{account("a", 92, timestamp+20000), account("b", 85, timestamp+30000)}, "b", true},
+		{"reset sooner", []Account{account("a", 30, timestamp+20000), account("b", 20, timestamp+10000)}, "b", false},
+		{"priority in tie", func() []Account {
+			b := account("b", 20, timestamp+20500)
+			b.Priority = 1
+			return []Account{account("a", 30, timestamp+20000), b}
+		}(), "b", false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if d := wantDecision(t, c.list, "a", 0, c.target, "rule"); d.Urgent != c.urgent {
+				t.Fatalf("urgent = %v, want %v", d.Urgent, c.urgent)
+			}
+		})
+	}
+	if d := Decide([]Account{account("a", 30, timestamp+20000), account("b", 20, timestamp+30000)}, "id-a", 0, timestamp); d.Action != "hold" || d.Urgent {
+		t.Fatal("a hold is never urgent")
+	}
+}

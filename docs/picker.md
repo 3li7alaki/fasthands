@@ -30,6 +30,11 @@ windows of the models in use): `used` in 0..1 and `resets_at`.
      one with the most weighted headroom on its binding window;
    - every account at or over `threshold`: move to the account whose binding window
      resets first, if it resets at least 5 min sooner than the active one's.
+   A switch from the reset trigger (not usage at `threshold`, not rule 4) waits until no
+   Claude session is mid-turn: each account has its own prompt cache, so a switch costs
+   every open session one uncached request, and an idle session's cache has often
+   expired anyway. Ceiling: sessions that never go idle defer it until the active
+   account reaches `threshold`.
 5. Refresh the chosen candidate's usage before acting (it may have been used elsewhere,
    such as a VPS on a setup-token) and re-run the rule on the fresh numbers.
 

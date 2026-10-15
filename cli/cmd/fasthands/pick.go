@@ -12,6 +12,7 @@ import (
 
 	"fasthands/internal/accounts"
 	"fasthands/internal/claudecfg"
+	"fasthands/internal/claudesessions"
 	"fasthands/internal/picker"
 	"fasthands/internal/statehome"
 	usageState "fasthands/internal/usage"
@@ -103,6 +104,14 @@ func pick(m accounts.Manager, auto, jsonMode bool, stdout, stderr io.Writer) int
 	}
 	switched := false
 	var warnings []string
+	if auto && d.Action == "switch" && !d.Urgent && anyMidTurn(loc) {
+		// Each account has its own prompt cache, so a switch costs every open session one
+		// uncached request. A non-urgent switch waits until no session is mid-turn, when
+		// an idle session's cache has often expired anyway. The hook retries each minute.
+		// ponytail: sessions that never go idle defer it until the active account turns
+		// urgent at threshold; add a maximum wait if that wastes expiring quota.
+		d = picker.Decision{Action: "hold", From: d.From, Reason: "waiting for idle Claude sessions before switching to " + aliases[d.To]}
+	}
 	if auto && d.Action == "switch" {
 		// Rule 5: Fetch owns budgets and idle token rotation; always re-read before acting.
 		fetchUsage(m, []string{d.To}, loc, d.From)
@@ -155,6 +164,13 @@ func pick(m accounts.Manager, auto, jsonMode bool, stdout, stderr io.Writer) int
 		return 0
 	}
 	return code
+}
+
+// anyMidTurn counts every session, the one that spawned this run included: its own
+// cache is lost by a switch just the same. An unreadable scan counts as busy.
+func anyMidTurn(loc claudecfg.Locations) bool {
+	sessions, err := claudesessions.Scan(loc.ConfigHome)
+	return err != nil || len(claudesessions.MidTurn(sessions)) != 0
 }
 
 func autoLock(directory string) (*os.File, error) {

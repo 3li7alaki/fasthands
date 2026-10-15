@@ -29,6 +29,9 @@ type Decision struct {
 	From   string `json:"from"`
 	To     string `json:"to"`
 	Reason string `json:"reason"`
+	// Urgent marks switches forced by the active account's usage (threshold, rule 4).
+	// Other switches only chase an earlier reset and can wait for idle sessions.
+	Urgent bool `json:"urgent"`
 }
 
 type evaluated struct {
@@ -148,10 +151,15 @@ func Decide(accounts []Account, active string, lastSwitchAt, now int64) Decision
 	switchTo := func(b evaluated, reason string) Decision {
 		return Decision{Action: "switch", From: active, To: b.ID, Reason: reason}
 	}
+	urgent := func(b evaluated, reason string) Decision {
+		d := switchTo(b, reason)
+		d.Urgent = true
+		return d
+	}
 	b := bestEligible(others)
 	if a.binding.Used/100 >= threshold {
 		if b != nil {
-			return switchTo(*b, fmt.Sprintf("rule 3: %s at %g%% (%s); %s eligible, weekly reset order", a.Alias, a.binding.Used, a.window, b.Alias))
+			return urgent(*b, fmt.Sprintf("rule 3: %s at %g%% (%s); %s eligible, weekly reset order", a.Alias, a.binding.Used, a.window, b.Alias))
 		}
 		var room, sooner *evaluated
 		for i := range others {
@@ -168,10 +176,10 @@ func Decide(accounts []Account, active string, lastSwitchAt, now int64) Decision
 			}
 		}
 		if room != nil {
-			return switchTo(*room, fmt.Sprintf("rule 4: %s at %g%% (%s); %s has most weighted binding headroom", a.Alias, a.binding.Used, a.window, room.Alias))
+			return urgent(*room, fmt.Sprintf("rule 4: %s at %g%% (%s); %s has most weighted binding headroom", a.Alias, a.binding.Used, a.window, room.Alias))
 		}
 		if sooner != nil && a.binding.ResetsAt != 0 && sooner.binding.ResetsAt <= a.binding.ResetsAt-escapeMargin {
-			return switchTo(*sooner, fmt.Sprintf("rule 4: %s binding reset at least %ds before %s", sooner.Alias, escapeMargin, a.Alias))
+			return urgent(*sooner, fmt.Sprintf("rule 4: %s binding reset at least %ds before %s", sooner.Alias, escapeMargin, a.Alias))
 		}
 		d.Reason = "rule 4: no known account below threshold or binding reset at least 300s sooner"
 		return d

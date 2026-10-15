@@ -111,7 +111,7 @@ func TestPickOffline(t *testing.T) {
 					if len(args) == 2 {
 						var d picker.Decision
 						var shape map[string]json.RawMessage
-						if json.Unmarshal([]byte(out), &d) != nil || json.Unmarshal([]byte(out), &shape) != nil || len(shape) != 5 || string(shape["auto"]) != "true" || d.Reason == "" || d.From != map[bool]string{true: "", false: "a"}[mode == "unknown"] {
+						if json.Unmarshal([]byte(out), &d) != nil || json.Unmarshal([]byte(out), &shape) != nil || len(shape) != 6 || string(shape["auto"]) != "true" || d.Reason == "" || d.From != map[bool]string{true: "", false: "a"}[mode == "unknown"] {
 							t.Fatal("pick JSON shape or alias wrong")
 						}
 						if mode == "switch" && (d.Action != "switch" || d.To != "b") || mode != "switch" && (d.Action != "hold" || d.To != "") {
@@ -270,7 +270,7 @@ func TestAutoOnce(t *testing.T) {
 						Switched bool
 					}
 					var shape map[string]json.RawMessage
-					if json.Unmarshal([]byte(out), &result) != nil || json.Unmarshal([]byte(out), &shape) != nil || len(shape) != 5 || result.Switched != wantSwitch || result.From != "a" {
+					if json.Unmarshal([]byte(out), &result) != nil || json.Unmarshal([]byte(out), &shape) != nil || len(shape) != 6 || result.Switched != wantSwitch || result.From != "a" {
 						t.Fatal("wrong auto JSON shape or switched flag")
 					}
 					if wantSwitch && (result.Action != "switch" || result.To != wantAlias) || !wantSwitch && (result.Action != "hold" || result.To != "") {
@@ -357,6 +357,52 @@ func TestPickerCommandUsageAndFailures(t *testing.T) {
 		}
 		if code, out, stderr := invoke(args...); code != want || out != "" || stderr == "" {
 			t.Fatal("wrong operational failure exit code")
+		}
+	}
+}
+
+// A reset-chasing switch waits while any session, the caller's included, is mid-turn;
+// it spends no usage request while waiting and switches once sessions are idle.
+func TestAutoOnceWaitsForIdle(t *testing.T) {
+	for _, targetPlatform := range []string{"linux", "darwin"} {
+		for _, mode := range []string{"busy", "busy-self", "idle"} {
+			t.Run(targetPlatform+"/"+mode, func(t *testing.T) {
+				f := setupSwitchCommand(t, targetPlatform)
+				statusClock(t)
+				pickerUsage(t, f, 30) // second resets 10000s sooner: not urgent
+				store := credstore.New(platform, securityPath, filepath.Join(f.fast, "credentials"))
+				if err := store.Write("second-id", []byte(validUsageLogin(secondBlob))); err != nil {
+					t.Fatal(err)
+				}
+				if mode != "idle" {
+					if err := os.Mkdir(filepath.Join(f.home, "sessions"), 0700); err != nil {
+						t.Fatal(err)
+					}
+					writeFixture(t, filepath.Join(f.home, "sessions", "42.json"), "invalid")
+				}
+				if mode == "busy-self" {
+					t.Setenv("CLAUDE_PID", "42") // the spawning session's own turn still counts
+				}
+				calls := 0
+				usageServer(t, func(w http.ResponseWriter, r *http.Request) {
+					calls++
+					fmt.Fprintf(w, `{"seven_day":{"utilization":20,"resets_at":%q}}`, time.Unix(statusNow+10000, 0).UTC().Format(time.RFC3339))
+				})
+				code, out, stderr := invoke("auto", "--once")
+				live, err := claudecfg.ActiveUUID(f.loc)
+				if err != nil || code != 0 || stderr != "" {
+					t.Fatalf("auto failed: %d %q %q", code, out, stderr)
+				}
+				if mode == "idle" {
+					if !strings.HasPrefix(out, "switch a -> b: ") || live != "second-id" || calls != 1 {
+						t.Fatalf("idle sessions must not delay the switch: %q", out)
+					}
+					return
+				}
+				if out != "hold: waiting for idle Claude sessions before switching to b\n" || live != activeID || calls != 0 {
+					t.Fatalf("busy sessions must hold without a usage request: %q calls=%d", out, calls)
+				}
+			})
 		}
 	}
 }

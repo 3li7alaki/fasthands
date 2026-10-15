@@ -97,7 +97,9 @@ the way a warehouse ships the stock that spoils first (FEFO: first expired, firs
    other count as a tie, broken by your `priority` order, then by weighted headroom.
 3. **Switch** when the live account hits 90% on any window, or another eligible account
    resets at least an hour sooner. Not within 5 minutes of the last switch, unless the
-   live account is at 100%.
+   live account is at 100%. Each account has its own prompt cache, so a switch that only
+   chases an earlier reset waits until no session is mid-turn; one forced by usage goes
+   at once.
 4. **All full:** move to whichever account has room left, or, if none has, the one
    whose binding window resets first.
 5. **Check before acting:** fetch the target's usage fresh and decide again, since it
