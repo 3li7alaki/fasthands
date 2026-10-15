@@ -1,0 +1,59 @@
+name: Release
+# Rolling distribution: every push to main rebuilds binaries and republishes the
+# single `latest` release. No version tags, no semver. install.sh always fetches `latest`.
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: cli
+    strategy:
+      matrix:
+        include:
+          - { goos: linux,  goarch: amd64 }
+          - { goos: linux,  goarch: arm64 }
+          - { goos: darwin, goarch: amd64 }
+          - { goos: darwin, goarch: arm64 }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+      - name: build fasthands-${{ matrix.goos }}-${{ matrix.goarch }}
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: '0'
+        run: |
+          go build -trimpath \
+            -ldflags "-s -w -X fasthands/internal/version.Version=${GITHUB_SHA::7}" \
+            -o "fasthands-${GOOS}-${GOARCH}" ./cmd/fasthands
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fasthands-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: cli/fasthands-${{ matrix.goos }}-${{ matrix.goarch }}
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: republish the rolling `latest` release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete latest --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag 2>/dev/null || true
+          gh release create latest dist/fasthands-* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "latest" \
+            --notes "Rolling build from ${GITHUB_SHA::7}. \`curl -fsSL https://raw.githubusercontent.com/$GITHUB_REPOSITORY/main/install.sh | sh\`"
