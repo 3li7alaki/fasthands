@@ -16,8 +16,10 @@ func refresh(m accounts.Manager, aliases []string, jsonMode bool, stdout, stderr
 	}
 	targets := make(map[string]bool, len(metadata))
 	if len(aliases) == 0 {
-		for id := range metadata {
-			targets[id] = true
+		for id, a := range metadata {
+			if !a.Disabled {
+				targets[id] = true
+			}
 		}
 	}
 	for _, alias := range aliases {

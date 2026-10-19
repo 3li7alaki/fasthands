@@ -282,6 +282,29 @@ func TestSwitchCommandRefusal(t *testing.T) {
 	}
 }
 
+func TestSwitchDisabledRefuses(t *testing.T) {
+	for _, targetPlatform := range []string{"linux", "darwin"} {
+		for _, alias := range []string{"a", "b"} {
+			t.Run(targetPlatform+"/"+alias, func(t *testing.T) {
+				f := setupSwitchCommand(t, targetPlatform)
+				if code, _, stderr := invoke("disable", alias); code != 0 {
+					t.Fatal(stderr)
+				}
+				beforeFast, beforeClaude := snapshot(t, f.fast), snapshot(t, f.home)
+				for _, args := range [][]string{{"switch", alias, "--json"}, {"switch", alias, "--wait", "1h"}} {
+					code, out, stderr := invoke(args...)
+					if code != 1 || out != "" || stderr != alias+" is disabled; run fasthands enable "+alias+" first\n" {
+						t.Fatalf("disabled account was not refused: %d %q %q", code, out, stderr)
+					}
+					if !reflect.DeepEqual(beforeFast, snapshot(t, f.fast)) || !reflect.DeepEqual(beforeClaude, snapshot(t, f.home)) {
+						t.Fatal("disabled switch changed saved or live login")
+					}
+				}
+			})
+		}
+	}
+}
+
 // Invariant 12: add cannot read a login or create fasthands state while Claude owns a lock.
 func TestAddBusyClaudeLockWritesNothing(t *testing.T) {
 	for _, targetPlatform := range []string{"linux", "darwin"} {

@@ -69,14 +69,6 @@ func (m Manager) switchAccount(alias string, loc claudecfg.Locations, platform, 
 		return SwitchResult{}, err
 	}
 	defer unlock(lock)
-	held, err := claudelock.Acquire(claudelock.Locks(loc), claudeLockTimeout)
-	if errors.Is(err, claudelock.ErrBusy) {
-		return SwitchResult{}, errors.New("Claude Code is busy with its credentials; retry in a few seconds")
-	}
-	if err != nil {
-		return SwitchResult{}, err
-	}
-	defer held.Release()
 
 	db, err := m.read()
 	if err != nil {
@@ -93,6 +85,17 @@ func (m Manager) switchAccount(alias string, loc claudecfg.Locations, platform, 
 	if targetID == "" {
 		return SwitchResult{}, fmt.Errorf("no account with alias %q", alias)
 	}
+	if target.Disabled {
+		return SwitchResult{}, fmt.Errorf("%s is disabled; run fasthands enable %s first", alias, alias)
+	}
+	held, err := claudelock.Acquire(claudelock.Locks(loc), claudeLockTimeout)
+	if errors.Is(err, claudelock.ErrBusy) {
+		return SwitchResult{}, errors.New("Claude Code is busy with its credentials; retry in a few seconds")
+	}
+	if err != nil {
+		return SwitchResult{}, err
+	}
+	defer held.Release()
 	live, inKeychain, err := claudecfg.ReadLive(loc, platform, securityPath)
 	if err != nil {
 		return SwitchResult{}, err
@@ -255,8 +258,13 @@ func (m Manager) waitForSessions(alias string, loc claudecfg.Locations, options 
 		json.Unmarshal(identity["accountUuid"], &liveID)
 	}
 	for id, account := range db.Accounts {
-		if account.Alias == alias && id == liveID {
-			return nil
+		if account.Alias == alias {
+			if account.Disabled {
+				return fmt.Errorf("%s is disabled; run fasthands enable %s first", alias, alias)
+			}
+			if id == liveID {
+				return nil
+			}
 		}
 	}
 	if options.Force {

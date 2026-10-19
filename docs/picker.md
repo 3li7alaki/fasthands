@@ -14,6 +14,9 @@ hit a limit, waste as little weekly quota as possible, never flap.
 Per account, for every window the user actually uses (5h, weekly, the per-model weekly
 windows of the models in use): `used` in 0..1 and `resets_at`.
 
+Disabled accounts are never targets. A disabled active account bypasses cooldown and
+uses the urgent threshold path in rules 3 and 4.
+
 1. Eligible: every used window is at least `hysteresis` below `threshold`
    (defaults 0.10 and 0.90, so under 0.80).
 2. Rank eligible accounts by soonest weekly reset (FEFO: first expired, first out).

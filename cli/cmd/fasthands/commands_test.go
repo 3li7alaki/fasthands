@@ -78,8 +78,8 @@ func TestAddAndListCommands(t *testing.T) {
 		t.Fatal("explicit alias update failed")
 	}
 	code, out, err = invoke("ls")
-	if code != 0 || err != "" || !strings.HasPrefix(out, "work\tPerson@example.com\t12345678\t") || !strings.HasSuffix(out, "\tfile\n") {
-		t.Fatal("human list must show alias, email, short uuid, addedAt and store")
+	if code != 0 || err != "" || !strings.HasPrefix(out, "work\tPerson@example.com\t12345678\t") || !strings.HasSuffix(out, "\tfile\t\n") {
+		t.Fatal("human list must show alias, email, short uuid, addedAt, store and disabled note")
 	}
 	code, out, err = invoke("ls", "--json")
 	var listed struct {
@@ -109,6 +109,82 @@ func TestHumanAdd(t *testing.T) {
 	}
 }
 
+func TestDisableEnableCommands(t *testing.T) {
+	f := setupSwitchCommand(t, "linux")
+	backup := snapshot(t, filepath.Join(f.fast, "credentials"))
+	for _, tt := range []struct {
+		args     []string
+		want     string
+		disabled bool
+	}{
+		{[]string{"disable", "a"}, "disabled a\n", true},
+		{[]string{"disable", "--json", "a"}, "{\"alias\":\"a\",\"disabled\":true}\n", true},
+		{[]string{"enable", "a", "--json"}, "{\"alias\":\"a\",\"disabled\":false}\n", false},
+		{[]string{"enable", "a"}, "enabled a\n", false},
+	} {
+		if code, out, stderr := invoke(tt.args...); code != 0 || out != tt.want || stderr != "" {
+			t.Fatalf("disable or enable failed: %d %q %q", code, out, stderr)
+		}
+		code, out, stderr := invoke("ls", "--json")
+		var result struct {
+			Accounts []accounts.Listed `json:"accounts"`
+		}
+		if code != 0 || stderr != "" || json.Unmarshal([]byte(out), &result) != nil || len(result.Accounts) != 2 || result.Accounts[0].Disabled != tt.disabled || result.Accounts[1].Disabled {
+			t.Fatal("list JSON lost disabled state")
+		}
+		code, out, stderr = invoke("ls")
+		rows := strings.Split(strings.TrimSuffix(out, "\n"), "\n")
+		note := ""
+		if tt.disabled {
+			note = "disabled"
+		}
+		if code != 0 || stderr != "" || len(rows) != 2 || !strings.HasSuffix(rows[0], "\tfile\t"+note) || !strings.HasSuffix(rows[1], "\tfile\t") {
+			t.Fatal("human list lost disabled column")
+		}
+	}
+	if !reflect.DeepEqual(backup, snapshot(t, filepath.Join(f.fast, "credentials"))) {
+		t.Fatal("disable or enable changed saved logins")
+	}
+	for _, command := range []string{"disable", "enable"} {
+		before := snapshot(t, f.fast)
+		if code, out, stderr := invoke(command, "missing", "--json"); code != 1 || out != "" || stderr != "no account with alias \"missing\"\n" || !reflect.DeepEqual(before, snapshot(t, f.fast)) {
+			t.Fatal("unknown alias did not fail without writes")
+		}
+	}
+}
+
+func TestRenameCommand(t *testing.T) {
+	f := setupSwitchCommand(t, "linux")
+	backup := snapshot(t, filepath.Join(f.fast, "credentials"))
+	for _, tt := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"rename", "a", "work"}, "renamed a to work\n"},
+		{[]string{"rename", "work", "--json", "main"}, "{\"from\":\"work\",\"to\":\"main\"}\n"},
+	} {
+		if code, out, stderr := invoke(tt.args...); code != 0 || out != tt.want || stderr != "" {
+			t.Fatalf("rename failed: %d %q %q", code, out, stderr)
+		}
+	}
+	if code, out, stderr := invoke("ls", "--json"); code != 0 || stderr != "" || !strings.Contains(out, `"alias":"main"`) {
+		t.Fatal("rename was not persisted")
+	}
+	before := snapshot(t, f.fast)
+	for _, tt := range []struct{ from, to, failure string }{
+		{"main", "b", "alias \"b\" is already in use\n"},
+		{"main", "BAD", "alias must match ^[a-z0-9][a-z0-9_-]{0,31}$\n"},
+		{"missing", "new", "no account with alias \"missing\"\n"},
+	} {
+		if code, out, stderr := invoke("rename", tt.from, tt.to, "--json"); code != 1 || out != "" || stderr != tt.failure || !reflect.DeepEqual(before, snapshot(t, f.fast)) {
+			t.Fatal("rename refusal changed files or returned wrong error")
+		}
+	}
+	if !reflect.DeepEqual(backup, snapshot(t, filepath.Join(f.fast, "credentials"))) {
+		t.Fatal("rename changed saved logins")
+	}
+}
+
 func TestAddReadsSeparateStorage(t *testing.T) {
 	home, fast := setupActive(t)
 	storage := t.TempDir()
@@ -131,13 +207,15 @@ func TestCommandUsageAndHelp(t *testing.T) {
 	for _, args := range [][]string{
 		{"unknown"}, {"add", "--alias"}, {"add", "--alias", ""}, {"add", "--alias", "BAD"},
 		{"ls", "--alias", "name"}, {"ls", "extra"}, {"add", "--json=invalid"},
+		{"disable"}, {"disable", "a", "b"}, {"enable"}, {"enable", "a", "b"},
+		{"rename"}, {"rename", "a"}, {"rename", "a", "b", "c"},
 	} {
 		code, out, err := invoke(args...)
 		if code != 2 || out != "" || err == "" {
 			t.Fatalf("invalid arguments must return usage exit 2: %v", args)
 		}
 	}
-	for _, args := range [][]string{{"help"}, {"add", "--help"}, {"ls", "-h"}} {
+	for _, args := range [][]string{{"help"}, {"add", "--help"}, {"ls", "-h"}, {"disable", "--help"}, {"enable", "--help"}, {"rename", "--help"}} {
 		code, out, err := invoke(args...)
 		if code != 0 || out == "" || err != "" {
 			t.Fatalf("help must use stdout and exit 0: %v", args)

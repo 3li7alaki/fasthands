@@ -66,6 +66,9 @@ cannot break your status line.
 | `status` | Usage per account: 5h and weekly windows, resets, pace, plan. Refreshes data older than 10 min. |
 | `refresh [ALIAS...]` | Fetch usage now. |
 | `priority ALIAS...` | Your preferred order, used to break ties. |
+| `disable ALIAS` | Park an account without deleting its saved login. |
+| `enable ALIAS` | Make a parked account available for switching again. |
+| `rename OLD NEW` | Change an account alias without changing its saved login. |
 | `pick` | Show what the picker would do, and why. Changes nothing. |
 | `auto on\|off` | Pause or resume automatic switching. |
 | `auto --once` | Run the picker once and act on it. The status line hook does this for you. |

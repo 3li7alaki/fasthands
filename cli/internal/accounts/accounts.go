@@ -30,6 +30,7 @@ type Account struct {
 	SubscriptionType string          `json:"subscriptionType,omitempty"`
 	RateLimitTier    string          `json:"rateLimitTier,omitempty"`
 	Priority         int             `json:"priority,omitempty"`
+	Disabled         bool            `json:"disabled,omitempty"`
 }
 
 type database struct {
@@ -52,6 +53,7 @@ type Listed struct {
 	AccountUUID string `json:"accountUuid"`
 	AddedAt     string `json:"addedAt"`
 	Store       string `json:"store"`
+	Disabled    bool   `json:"disabled,omitempty"`
 }
 
 type Manager struct {
@@ -134,7 +136,7 @@ func (m Manager) Add(c claudecfg.Capture, alias string, aliasGiven bool) (Result
 	if !updated {
 		added = timestamp
 	}
-	db.Accounts[c.AccountUUID] = Account{alias, c.Email, c.OrganizationUUID, added, timestamp, m.Store.Kind(), c.OAuthAccount, c.SubscriptionType, c.RateLimitTier, previous.Priority}
+	db.Accounts[c.AccountUUID] = Account{alias, c.Email, c.OrganizationUUID, added, timestamp, m.Store.Kind(), c.OAuthAccount, c.SubscriptionType, c.RateLimitTier, previous.Priority, previous.Disabled}
 	// Validate encoding before replacing the backup, as add did before plan metadata existed.
 	if _, err := json.Marshal(db); err != nil {
 		return Result{}, errors.New("cannot encode accounts metadata")
@@ -146,6 +148,64 @@ func (m Manager) Add(c claudecfg.Capture, alias string, aliasGiven bool) (Result
 		return Result{}, err
 	}
 	return Result{alias, c.AccountUUID, c.Email, c.OrganizationUUID, m.Store.Kind(), updated}, nil
+}
+
+func (m Manager) SetDisabled(alias string, disabled bool) error {
+	lock, err := m.lock()
+	if err != nil {
+		return err
+	}
+	defer unlock(lock)
+	db, err := m.read()
+	if err != nil {
+		return err
+	}
+	for id, a := range db.Accounts {
+		if a.Alias == alias {
+			if a.Disabled == disabled {
+				return nil
+			}
+			a.Disabled = disabled
+			a.UpdatedAt = now().UTC().Format(time.RFC3339)
+			db.Accounts[id] = a
+			return m.write(db)
+		}
+	}
+	return fmt.Errorf("no account with alias %q", alias)
+}
+
+func (m Manager) Rename(oldAlias, newAlias string) error {
+	lock, err := m.lock()
+	if err != nil {
+		return err
+	}
+	defer unlock(lock)
+	db, err := m.read()
+	if err != nil {
+		return err
+	}
+	if !ValidAlias(newAlias) {
+		return errors.New("alias must match ^[a-z0-9][a-z0-9_-]{0,31}$")
+	}
+	var oldID string
+	for id, a := range db.Accounts {
+		if a.Alias == oldAlias {
+			oldID = id
+		}
+	}
+	if oldID == "" {
+		return fmt.Errorf("no account with alias %q", oldAlias)
+	}
+	for id, a := range db.Accounts {
+		if id != oldID && a.Alias == newAlias {
+			return fmt.Errorf("alias %q is already in use", newAlias)
+		}
+	}
+	a := db.Accounts[oldID]
+	a.Alias = newAlias
+	a.UpdatedAt = now().UTC().Format(time.RFC3339)
+	db.Accounts[oldID] = a
+	return m.write(db)
 }
 
 func (m Manager) lock() (*os.File, error) {
@@ -224,7 +284,7 @@ func (m Manager) List() ([]Listed, error) {
 	}
 	list := make([]Listed, 0, len(db.Accounts))
 	for id, account := range db.Accounts {
-		list = append(list, Listed{account.Alias, account.Email, id, account.AddedAt, account.Store})
+		list = append(list, Listed{account.Alias, account.Email, id, account.AddedAt, account.Store, account.Disabled})
 	}
 	sort.Slice(list, func(i, j int) bool { return list[i].Alias < list[j].Alias })
 	return list, nil

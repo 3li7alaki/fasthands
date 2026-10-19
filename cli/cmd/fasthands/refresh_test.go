@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -217,6 +218,103 @@ func TestRefreshAliasesAndEmpty(t *testing.T) {
 	}
 	if code, out, stderr := invoke("refresh", "--help"); code != 0 || !strings.Contains(out, "refresh [ALIAS...]") || stderr != "" {
 		t.Fatal("refresh help missing")
+	}
+}
+
+func TestDisabledUsageCommands(t *testing.T) {
+	for _, targetPlatform := range []string{"linux", "darwin"} {
+		for _, command := range []string{"refresh", "status"} {
+			for _, disabledAlias := range []string{"a", "b"} {
+				t.Run(targetPlatform+"/"+command+"/"+disabledAlias, func(t *testing.T) {
+					f := setupSwitchCommand(t, targetPlatform)
+					statusClock(t)
+					f.setLive(t, validUsageLogin(secondBlob))
+					writeFixture(t, f.loc.GlobalConfig, secondIdentity)
+					if code, _, stderr := invoke("add", "--alias", "b"); code != 0 {
+						t.Fatal(stderr)
+					}
+					f.setLive(t, validUsageLogin(activeBlob))
+					writeFixture(t, f.loc.GlobalConfig, activeIdentity)
+					if code, _, stderr := invoke("disable", disabledAlias); code != 0 {
+						t.Fatal(stderr)
+					}
+					backup := snapshot(t, filepath.Join(f.fast, "credentials"))
+					var calls atomic.Int32
+					usageServer(t, func(w http.ResponseWriter, r *http.Request) {
+						calls.Add(1)
+						want := "Bearer cli-access-private"
+						if disabledAlias == "a" {
+							want = "Bearer second-access-private"
+						}
+						if r.URL.Host != "usage.test" || r.Header.Get("Authorization") != want {
+							t.Error("disabled account was fetched or refreshed")
+						}
+						io.WriteString(w, `{"five_hour":{"utilization":12,"resets_at":null}}`)
+					})
+					code, out, stderr := invoke(command, "--json")
+					if code != 0 || stderr != "" || calls.Load() != 1 {
+						t.Fatalf("usage command failed or fetched disabled account: %d %q %q", code, out, stderr)
+					}
+					if command == "refresh" {
+						var result struct {
+							Results []accounts.FetchResult `json:"results"`
+						}
+						if json.Unmarshal([]byte(out), &result) != nil || len(result.Results) != 1 || !result.Results[0].Fetched || result.Results[0].Alias == disabledAlias {
+							t.Fatal("refresh included disabled account")
+						}
+						// An explicit alias still opts into fetching a disabled account.
+						usageServer(t, func(w http.ResponseWriter, r *http.Request) {
+							calls.Add(1)
+							want := "Bearer cli-access-private"
+							if disabledAlias == "b" {
+								want = "Bearer second-access-private"
+							}
+							if r.Header.Get("Authorization") != want {
+								t.Error("explicit refresh used wrong login")
+							}
+							io.WriteString(w, `{}`)
+						})
+						code, out, stderr = invoke("refresh", disabledAlias, "--json")
+						if code != 0 || stderr != "" || calls.Load() != 2 || json.Unmarshal([]byte(out), &result) != nil || len(result.Results) != 1 || result.Results[0].Alias != disabledAlias || !result.Results[0].Fetched {
+							t.Fatal("explicit disabled alias did not refresh")
+						}
+					} else {
+						var result struct {
+							Accounts []statusAccount `json:"accounts"`
+						}
+						if json.Unmarshal([]byte(out), &result) != nil || len(result.Accounts) != 2 {
+							t.Fatal("status dropped disabled account")
+						}
+						for _, row := range result.Accounts {
+							disabled := row.Alias == disabledAlias
+							if row.Disabled != disabled || disabled && (row.Note != "disabled" || row.FiveHour != nil) {
+								t.Fatal("status lost disabled flag or note")
+							}
+						}
+						code, out, stderr = invoke("status")
+						if code != 0 || stderr != "" || calls.Load() != 1 {
+							t.Fatal("human status fetched disabled account")
+						}
+						found := false
+						for _, row := range strings.Split(strings.TrimSuffix(out, "\n"), "\n") {
+							if strings.HasPrefix(row, disabledAlias+"\t") {
+								found = true
+								if len(strings.Split(row, "\t")) != 10 || !strings.HasSuffix(row, "\tdisabled") {
+									t.Fatal("human status changed columns or lost disabled note")
+								}
+							}
+						}
+						if !found {
+							t.Fatal("human status dropped disabled account")
+						}
+					}
+					if !reflect.DeepEqual(backup, snapshot(t, filepath.Join(f.fast, "credentials"))) {
+						t.Fatal("fetching valid logins changed backups")
+					}
+					assertUsagePrivate(t, f, out+stderr)
+				})
+			}
+		}
 	}
 }
 

@@ -22,6 +22,7 @@ type Account struct {
 	Windows   usage.Windows
 	Weight    float64
 	Priority  int
+	Disabled  bool
 }
 
 type Decision struct {
@@ -29,7 +30,7 @@ type Decision struct {
 	From   string `json:"from"`
 	To     string `json:"to"`
 	Reason string `json:"reason"`
-	// Urgent marks switches forced by the active account's usage (threshold, rule 4).
+	// Urgent marks switches forced by the active account's usage or disabled state.
 	// Other switches only chase an earlier reset and can wait for idle sessions.
 	Urgent bool `json:"urgent"`
 }
@@ -132,7 +133,7 @@ func Decide(accounts []Account, active string, lastSwitchAt, now int64) Decision
 		e := evaluate(a, now)
 		if a.ID == active {
 			current = &e
-		} else {
+		} else if !a.Disabled {
 			others = append(others, e)
 		}
 	}
@@ -144,7 +145,7 @@ func Decide(accounts []Account, active string, lastSwitchAt, now int64) Decision
 		return d
 	}
 	a := *current
-	if now-lastSwitchAt < cooldown && a.binding.Used < 100 {
+	if !a.Disabled && now-lastSwitchAt < cooldown && a.binding.Used < 100 {
 		d.Reason = fmt.Sprintf("rule 3: cooldown (%ds left)", cooldown-(now-lastSwitchAt))
 		return d
 	}
@@ -157,9 +158,13 @@ func Decide(accounts []Account, active string, lastSwitchAt, now int64) Decision
 		return d
 	}
 	b := bestEligible(others)
-	if a.binding.Used/100 >= threshold {
+	if a.Disabled || a.binding.Used/100 >= threshold {
+		cause := fmt.Sprintf("%s at %g%% (%s)", a.Alias, a.binding.Used, a.window)
+		if a.Disabled {
+			cause = a.Alias + " is disabled"
+		}
 		if b != nil {
-			return urgent(*b, fmt.Sprintf("rule 3: %s at %g%% (%s); %s eligible, weekly reset order", a.Alias, a.binding.Used, a.window, b.Alias))
+			return urgent(*b, fmt.Sprintf("rule 3: %s; %s eligible, weekly reset order", cause, b.Alias))
 		}
 		var room, sooner *evaluated
 		for i := range others {
@@ -176,9 +181,12 @@ func Decide(accounts []Account, active string, lastSwitchAt, now int64) Decision
 			}
 		}
 		if room != nil {
-			return urgent(*room, fmt.Sprintf("rule 4: %s at %g%% (%s); %s has most weighted binding headroom", a.Alias, a.binding.Used, a.window, room.Alias))
+			return urgent(*room, fmt.Sprintf("rule 4: %s; %s has most weighted binding headroom", cause, room.Alias))
 		}
 		if sooner != nil && a.binding.ResetsAt != 0 && sooner.binding.ResetsAt <= a.binding.ResetsAt-escapeMargin {
+			if a.Disabled {
+				return urgent(*sooner, fmt.Sprintf("rule 4: %s; %s binding reset at least %ds before %s", cause, sooner.Alias, escapeMargin, a.Alias))
+			}
 			return urgent(*sooner, fmt.Sprintf("rule 4: %s binding reset at least %ds before %s", sooner.Alias, escapeMargin, a.Alias))
 		}
 		d.Reason = "rule 4: no known account below threshold or binding reset at least 300s sooner"

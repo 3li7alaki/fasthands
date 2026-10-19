@@ -74,6 +74,56 @@ func TestEligibility(t *testing.T) {
 	}
 }
 
+func TestDisabledTargets(t *testing.T) {
+	for _, tt := range []struct {
+		name         string
+		active, b, c float64
+		allDisabled  bool
+		want, rule   string
+	}{
+		{"eligible", 40, 10, 20, false, "c", "rule 3"},
+		{"headroom", 92, 81, 85, false, "c", "rule 4"},
+		{"binding-reset", 95, 95, 95, false, "c", "rule 4"},
+		{"all-disabled", 95, 10, 20, true, "", "rule 3"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			a := account("a", tt.active, timestamp+30000)
+			b, c := account("b", tt.b, timestamp+10000), account("c", tt.c, timestamp+20000)
+			b.Disabled, c.Disabled = true, tt.allDisabled
+			wantDecision(t, []Account{a, b, c}, "a", 0, tt.want, tt.rule)
+		})
+	}
+}
+
+func TestDisabledActive(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		used    float64
+		reset   int64
+		rule    string
+		unknown bool
+	}{
+		{"eligible", 20, timestamp + 40000, "rule 3", false},
+		{"headroom", 85, timestamp + 40000, "rule 4", false},
+		{"binding-reset", 95, timestamp + 10000, "rule 4", false},
+		{"unknown-active", 20, timestamp + 40000, "rule 3", true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			a, b := account("a", 20, timestamp+30000), account("b", tt.used, tt.reset)
+			a.Disabled = true
+			if tt.unknown {
+				a.Windows = usage.Windows{}
+			}
+			for _, last := range []int64{0, timestamp - 1} {
+				d := wantDecision(t, []Account{a, b}, "a", last, "b", tt.rule)
+				if !d.Urgent || !strings.Contains(d.Reason, "a is disabled") {
+					t.Fatalf("disabled active account did not force urgent switch: %+v", d)
+				}
+			}
+		})
+	}
+}
+
 // Slice 5a invariants 2, 3: FEFO anchors ties before priority, weighted headroom, and alias.
 func TestEligibleRanking(t *testing.T) {
 	for _, mode := range []string{"earliest", "weekly-not-binding", "unknown-last", "all-unknown", "priority", "weight", "alias", "outside-tie", "ranked", "tie-boundary"} {

@@ -164,11 +164,20 @@ func TestAutoLockHeld(t *testing.T) {
 // Slice 5a invariant 11: refresh only the chosen account, re-decide, force switch, and append one private log line.
 func TestAutoOnce(t *testing.T) {
 	for _, targetPlatform := range []string{"linux", "darwin"} {
-		for _, mode := range []string{"human", "json", "hold-human", "hold-json", "rotate", "warning", "retarget", "switch-failure", "create-log", "fetch-failure"} {
+		for _, mode := range []string{"human", "json", "hold-human", "hold-json", "rotate", "warning", "retarget", "switch-failure", "create-log", "fetch-failure", "disabled-active"} {
 			t.Run(targetPlatform+"/"+mode, func(t *testing.T) {
 				f := setupSwitchCommand(t, targetPlatform)
 				statusClock(t)
 				pickerUsage(t, f, 92)
+				if mode == "disabled-active" {
+					pickerUsage(t, f, 20)
+					if err := (usageState.Store{Directory: filepath.Join(f.fast, "state")}).MarkSwitch(statusNow); err != nil {
+						t.Fatal(err)
+					}
+					if code, _, stderr := invoke("disable", "a"); code != 0 {
+						t.Fatal(stderr)
+					}
+				}
 				store := credstore.New(platform, securityPath, filepath.Join(f.fast, "credentials"))
 				if mode != "rotate" {
 					if err := store.Write("second-id", []byte(validUsageLogin(secondBlob))); err != nil {
@@ -247,7 +256,7 @@ func TestAutoOnce(t *testing.T) {
 					}
 				}
 				args := []string{"auto", "--once"}
-				jsonMode := strings.HasSuffix(mode, "json") || mode == "rotate" || mode == "retarget" || mode == "warning"
+				jsonMode := strings.HasSuffix(mode, "json") || mode == "rotate" || mode == "retarget" || mode == "warning" || mode == "disabled-active"
 				if jsonMode {
 					args = append(args, "--json")
 				}
@@ -275,6 +284,9 @@ func TestAutoOnce(t *testing.T) {
 					}
 					if wantSwitch && (result.Action != "switch" || result.To != wantAlias) || !wantSwitch && (result.Action != "hold" || result.To != "") {
 						t.Fatalf("auto did not use fresh decision: %+v", result)
+					}
+					if mode == "disabled-active" && (!result.Urgent || !strings.Contains(result.Reason, "a is disabled")) {
+						t.Fatal("auto did not make an urgent switch away from disabled active account")
 					}
 				} else if mode != "switch-failure" && (wantSwitch && !strings.HasPrefix(out, "switch a -> b: ") || !wantSwitch && !strings.HasPrefix(out, "hold: ")) {
 					t.Fatal("wrong auto human output")

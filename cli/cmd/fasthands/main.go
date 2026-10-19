@@ -22,7 +22,7 @@ import (
 	"fasthands/internal/version"
 )
 
-const usage = "usage: fasthands {add [--alias NAME] | ls | switch ALIAS [--wait DURATION] | refresh [ALIAS...] | priority [ALIAS...] | pick | auto [on|off] | auto --once | status | hook statusline} [--json]\n       fasthands [--version] [--help] [--json]"
+const usage = "usage: fasthands {add [--alias NAME] | ls | switch ALIAS [--wait DURATION] | refresh [ALIAS...] | priority [ALIAS...] | disable ALIAS | enable ALIAS | rename OLD NEW | pick | auto [on|off] | auto --once | status | hook statusline} [--json]\n       fasthands [--version] [--help] [--json]"
 
 var platform = runtime.GOOS
 var securityPath = "/usr/bin/security"
@@ -55,7 +55,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	switch args[0] {
-	case "add", "ls", "switch", "status", "refresh", "priority", "pick", "auto":
+	case "add", "ls", "switch", "status", "refresh", "priority", "disable", "enable", "rename", "pick", "auto":
 	default:
 		fmt.Fprintln(stderr, usage)
 		return 2
@@ -79,7 +79,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	parseArgs := args[1:]
 	var aliases []string
-	if args[0] == "refresh" || args[0] == "priority" {
+	switch args[0] {
+	case "refresh", "priority", "disable", "enable", "rename":
 		parseArgs = nil
 		for i, arg := range args[1:] {
 			if arg == "--" {
@@ -122,7 +123,14 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if args[0] == "auto" && autoAction == "" && remaining == 1 && fs.Arg(0) != "" {
 		autoAction, remaining = fs.Arg(0), 0
 	}
-	if remaining != 0 || options.Wait < 0 || autoAction != "" && (once || autoAction != "on" && autoAction != "off") || (aliasGiven || args[0] == "switch") && !accounts.ValidAlias(alias) {
+	validCount := true
+	switch args[0] {
+	case "disable", "enable":
+		validCount = len(aliases) == 1
+	case "rename":
+		validCount = len(aliases) == 2
+	}
+	if !validCount || remaining != 0 || options.Wait < 0 || autoAction != "" && (once || autoAction != "on" && autoAction != "off") || (aliasGiven || args[0] == "switch") && !accounts.ValidAlias(alias) {
 		fmt.Fprintln(stderr, "invalid arguments or alias; alias must match ^[a-z0-9][a-z0-9_-]{0,31}$")
 		return 2
 	}
@@ -135,6 +143,35 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	m := accounts.Manager{Paths: paths, Store: credstore.New(platform, securityPath, paths.Credentials)}
+	if args[0] == "disable" || args[0] == "enable" {
+		disabled := args[0] == "disable"
+		if err := m.SetDisabled(aliases[0], disabled); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		if *jsonMode {
+			return outputJSON(stdout, stderr, struct {
+				Alias    string `json:"alias"`
+				Disabled bool   `json:"disabled"`
+			}{aliases[0], disabled})
+		}
+		fmt.Fprintf(stdout, "%sd %s\n", args[0], aliases[0])
+		return 0
+	}
+	if args[0] == "rename" {
+		if err := m.Rename(aliases[0], aliases[1]); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		if *jsonMode {
+			return outputJSON(stdout, stderr, struct {
+				From string `json:"from"`
+				To   string `json:"to"`
+			}{aliases[0], aliases[1]})
+		}
+		fmt.Fprintf(stdout, "renamed %s to %s\n", aliases[0], aliases[1])
+		return 0
+	}
 	if args[0] == "auto" && !once {
 		return autoState(paths.State, autoAction, *jsonMode, stdout, stderr)
 	}
@@ -216,7 +253,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 		if len(uuid) > 8 {
 			uuid = uuid[:8]
 		}
-		fmt.Fprintf(stdout, "%s\t%s\t%s\t%s\t%s\n", account.Alias, account.Email, uuid, account.AddedAt, account.Store)
+		note := ""
+		if account.Disabled {
+			note = "disabled"
+		}
+		fmt.Fprintf(stdout, "%s\t%s\t%s\t%s\t%s\t%s\n", account.Alias, account.Email, uuid, account.AddedAt, account.Store, note)
 	}
 	return 0
 }

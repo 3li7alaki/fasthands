@@ -75,7 +75,7 @@ func TestPickable(t *testing.T) {
 	m := manager(t.TempDir())
 	db := database{SchemaVersion: 1, Accounts: map[string]Account{
 		"a": {Alias: "a", RateLimitTier: "default_claude_max_20x", Priority: 2},
-		"b": {Alias: "b", RateLimitTier: "default_claude_max_5x", Priority: 1},
+		"b": {Alias: "b", RateLimitTier: "default_claude_max_5x", Priority: 1, Disabled: true},
 		"c": {Alias: "c", RateLimitTier: "unknown"},
 		"d": {Alias: "d"},
 	}}
@@ -90,7 +90,7 @@ func TestPickable(t *testing.T) {
 	}
 	for i, wantWeight := range []float64{20, 5, 1, 1} {
 		a := list[i]
-		if a.Weight != wantWeight || a.Priority != db.Accounts[a.ID].Priority || a.Alias != db.Accounts[a.ID].Alias || !reflect.DeepEqual(a.Windows, state.Accounts[a.ID].Windows) {
+		if a.Weight != wantWeight || a.Priority != db.Accounts[a.ID].Priority || a.Alias != db.Accounts[a.ID].Alias || a.Disabled != db.Accounts[a.ID].Disabled || !reflect.DeepEqual(a.Windows, state.Accounts[a.ID].Windows) {
 			t.Fatal("pickable lost metadata, windows, or plan weight")
 		}
 	}

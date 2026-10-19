@@ -71,6 +71,7 @@ type statusAccount struct {
 	Alias            string                   `json:"alias"`
 	AccountUUID      string                   `json:"accountUuid"`
 	Active           bool                     `json:"active"`
+	Disabled         bool                     `json:"disabled,omitempty"`
 	FiveHour         *statusWindow            `json:"fiveHour"`
 	SevenDay         *weeklyWindow            `json:"sevenDay"`
 	SeenAt           *int64                   `json:"seenAt"`
@@ -108,7 +109,10 @@ func status(m accounts.Manager, jsonMode bool, stdout, stderr io.Writer) int {
 	}
 	timestamp := now().Unix()
 	var stale []string
-	for id := range metadata {
+	for id, a := range metadata {
+		if a.Disabled {
+			continue
+		}
 		seen := newestSeenAt(state.Accounts[id].Windows)
 		if seen == 0 || timestamp-seen > 600 {
 			stale = append(stale, id)
@@ -131,8 +135,12 @@ func status(m accounts.Manager, jsonMode bool, stdout, stderr io.Writer) int {
 		saved := state.Accounts[id]
 		w := usageState.Effective(saved.Windows, timestamp)
 		row := statusAccount{Alias: a.Alias, AccountUUID: id, Active: id == live,
+			Disabled:         a.Disabled,
 			SubscriptionType: a.SubscriptionType, RateLimitTier: a.RateLimitTier,
 			Models: map[string]*statusWindow{}, Note: notes[id]}
+		if a.Disabled {
+			row.Note = "disabled"
+		}
 		window := func(w *usageState.Window) *statusWindow {
 			if w == nil {
 				return nil

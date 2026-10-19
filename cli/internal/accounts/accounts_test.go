@@ -89,6 +89,141 @@ func TestAddRefreshAndAlias(t *testing.T) {
 	}
 }
 
+func TestSetDisabled(t *testing.T) {
+	m := manager(t.TempDir())
+	if _, err := m.Add(capture("id", "one@example.com"), "one", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.SetPriority([]string{"one"}); err != nil {
+		t.Fatal(err)
+	}
+	db, err := m.read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := db.Accounts["id"]
+	clock := time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC)
+	oldNow := now
+	now = func() time.Time { return clock }
+	t.Cleanup(func() { now = oldNow })
+	path := filepath.Join(m.Paths.State, "accounts.json")
+	for _, disabled := range []bool{true, true, false, false} {
+		before, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		changed := want.Disabled != disabled
+		if err := m.SetDisabled("one", disabled); err != nil {
+			t.Fatal(err)
+		}
+		if changed {
+			want.Disabled, want.UpdatedAt = disabled, clock.Format(time.RFC3339)
+		}
+		db, err := m.read()
+		if err != nil || !reflect.DeepEqual(db.Accounts["id"], want) {
+			t.Fatal("disable or enable lost metadata")
+		}
+		after, err := os.ReadFile(path)
+		if err != nil || !changed && string(before) != string(after) {
+			t.Fatal("idempotent disable or enable changed metadata")
+		}
+		clock = clock.Add(time.Second)
+	}
+	for _, disabled := range []bool{true, false} {
+		before, _ := os.ReadFile(path)
+		err := m.SetDisabled("missing", disabled)
+		after, readErr := os.ReadFile(path)
+		if err == nil || err.Error() != `no account with alias "missing"` || readErr != nil || string(before) != string(after) {
+			t.Fatal("unknown alias did not fail without changing metadata")
+		}
+	}
+}
+
+func TestRename(t *testing.T) {
+	for _, tt := range []struct{ name, from, to, failure string }{
+		{"taken", "one", "two", `alias "two" is already in use`},
+		{"invalid", "one", "BAD", "alias must match ^[a-z0-9][a-z0-9_-]{0,31}$"},
+		{"empty", "one", "", "alias must match ^[a-z0-9][a-z0-9_-]{0,31}$"},
+		{"unknown", "missing", "new", `no account with alias "missing"`},
+		{"renamed", "one", "new", ""},
+		{"same", "one", "one", ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			m := manager(t.TempDir())
+			for _, alias := range []string{"one", "two"} {
+				if _, err := m.Add(capture("id-"+alias, alias+"@example.com"), alias, true); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := m.SetPriority([]string{"two", "one"}); err != nil {
+				t.Fatal(err)
+			}
+			if err := m.SetDisabled("one", true); err != nil {
+				t.Fatal(err)
+			}
+			db, err := m.read()
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := db.Accounts["id-one"]
+			path := filepath.Join(m.Paths.State, "accounts.json")
+			before, _ := os.ReadFile(path)
+			backupPath := filepath.Join(m.Paths.Credentials, "id-one.json")
+			backup, err := os.ReadFile(backupPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			oldNow := now
+			now = func() time.Time { return time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC) }
+			t.Cleanup(func() { now = oldNow })
+			err = m.Rename(tt.from, tt.to)
+			if tt.failure != "" {
+				after, readErr := os.ReadFile(path)
+				if err == nil || err.Error() != tt.failure || readErr != nil || string(before) != string(after) {
+					t.Fatalf("rename refusal changed metadata or returned wrong error: %v", err)
+				}
+			} else {
+				if err != nil {
+					t.Fatal(err)
+				}
+				want.Alias, want.UpdatedAt = tt.to, now().Format(time.RFC3339)
+				after, err := m.read()
+				if err != nil || len(after.Accounts) != 2 || !reflect.DeepEqual(after.Accounts["id-one"], want) || !reflect.DeepEqual(after.Accounts["id-two"], db.Accounts["id-two"]) {
+					t.Fatal("rename lost account fields, changed UUID or another account")
+				}
+			}
+			afterBackup, err := os.ReadFile(backupPath)
+			if err != nil || string(backup) != string(afterBackup) {
+				t.Fatal("rename changed saved login")
+			}
+		})
+	}
+}
+
+func TestAddPreservesDisabled(t *testing.T) {
+	m := manager(t.TempDir())
+	c := capture("id", "one@example.com")
+	if _, err := m.Add(c, "one", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.SetDisabled("one", true); err != nil {
+		t.Fatal(err)
+	}
+	for _, alias := range []string{"", "new"} {
+		if _, err := m.Add(c, alias, alias != ""); err != nil {
+			t.Fatal(err)
+		}
+		db, err := m.read()
+		if err != nil || !db.Accounts["id"].Disabled {
+			t.Fatal("re-add cleared disabled flag")
+		}
+		list, err := m.List()
+		if err != nil || len(list) != 1 || !list[0].Disabled {
+			t.Fatal("list lost disabled flag")
+		}
+	}
+}
+
 func TestAliasValidationAndDefaulting(t *testing.T) {
 	for _, alias := range []string{"a", "0", "a_b-c", strings.Repeat("a", 32)} {
 		if !ValidAlias(alias) {

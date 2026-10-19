@@ -55,7 +55,7 @@ func (m Manager) Pickable(state usage.State) ([]picker.Account, error) {
 		case strings.Contains(a.RateLimitTier, "max_5x"):
 			weight = 5
 		}
-		list = append(list, picker.Account{ID: id, Alias: a.Alias, Windows: state.Accounts[id].Windows, Weight: weight, Priority: a.Priority})
+		list = append(list, picker.Account{ID: id, Alias: a.Alias, Windows: state.Accounts[id].Windows, Weight: weight, Priority: a.Priority, Disabled: a.Disabled})
 	}
 	sort.Slice(list, func(i, j int) bool { return list[i].Alias < list[j].Alias })
 	return list, nil
