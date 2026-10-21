@@ -58,6 +58,10 @@ func TestPriorityCommand(t *testing.T) {
 		{[]string{"priority"}, "b\na\n"},
 		{[]string{"priority", "a"}, "a\n"},
 		{[]string{"priority", "--json"}, "{\"priority\":[\"a\"]}\n"},
+		{[]string{"priority", "b", "a"}, "b\na\n"},
+		{[]string{"priority", "--clear"}, ""},
+		{[]string{"priority", "--clear", "--json"}, "{\"priority\":[]}\n"},
+		{[]string{"priority", "b", "a"}, "b\na\n"},
 	} {
 		if code, out, stderr := invoke(tt.args...); code != 0 || out != tt.want || stderr != "" {
 			t.Fatalf("priority failed: %d %q %q", code, out, stderr)
@@ -71,6 +75,9 @@ func TestPriorityCommand(t *testing.T) {
 		if !reflect.DeepEqual(before, snapshot(t, f.fast)) {
 			t.Fatal("invalid priority wrote files")
 		}
+	}
+	if code, out, _ := invoke("priority", "--clear", "a"); code != 2 || out != "" || !reflect.DeepEqual(before, snapshot(t, f.fast)) {
+		t.Fatal("--clear with aliases must refuse without writing")
 	}
 }
 
@@ -355,7 +362,7 @@ func TestPickerCommandUsageAndFailures(t *testing.T) {
 		}
 	}
 	for _, command := range []string{"priority", "pick", "auto"} {
-		if code, out, stderr := invoke(command, "--help"); code != 0 || !strings.Contains(out, "priority [ALIAS...]") || !strings.Contains(out, "auto --once") || stderr != "" {
+		if code, out, stderr := invoke(command, "--help"); code != 0 || !strings.Contains(out, "priority [ALIAS... | --clear]") || !strings.Contains(out, "auto --once") || stderr != "" {
 			t.Fatal("picker commands missing from help")
 		}
 	}

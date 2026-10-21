@@ -18,8 +18,8 @@ import (
 	usageState "fasthands/internal/usage"
 )
 
-func priority(m accounts.Manager, aliases []string, jsonMode bool, stdout, stderr io.Writer) int {
-	if len(aliases) != 0 {
+func priority(m accounts.Manager, aliases []string, clear, jsonMode bool, stdout, stderr io.Writer) int {
+	if len(aliases) != 0 || clear {
 		if err := m.SetPriority(aliases); err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1

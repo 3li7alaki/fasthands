@@ -22,7 +22,7 @@ import (
 	"fasthands/internal/version"
 )
 
-const usage = "usage: fasthands {add [--alias NAME] | ls | switch ALIAS [--wait DURATION] | refresh [ALIAS...] | priority [ALIAS...] | disable ALIAS | enable ALIAS | rename OLD NEW | pick | auto [on|off] | auto --once | status | hook statusline} [--json]\n       fasthands [--version] [--help] [--json]"
+const usage = "usage: fasthands {add [--alias NAME] | ls | switch ALIAS [--wait DURATION] | refresh [ALIAS...] | priority [ALIAS... | --clear] | disable ALIAS | enable ALIAS | rename OLD NEW | pick | auto [on|off] | auto --once | status | hook statusline} [--json]\n       fasthands [--version] [--help] [--json]"
 
 var platform = runtime.GOOS
 var securityPath = "/usr/bin/security"
@@ -67,9 +67,13 @@ func run(args []string, stdout, stderr io.Writer) int {
 	var alias string
 	var autoAction string
 	var once bool
+	var clearPriority bool
 	var options accounts.SwitchOptions
 	if args[0] == "auto" {
 		fs.BoolVar(&once, "once", false, "make one automatic decision")
+	}
+	if args[0] == "priority" {
+		fs.BoolVar(&clearPriority, "clear", false, "remove every rank")
 	}
 	if args[0] == "add" {
 		fs.StringVar(&alias, "alias", "", "account alias")
@@ -129,6 +133,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 		validCount = len(aliases) == 1
 	case "rename":
 		validCount = len(aliases) == 2
+	case "priority":
+		// --clear with aliases is ambiguous; refuse it rather than guess which one was meant.
+		validCount = !clearPriority || len(aliases) == 0
 	}
 	if !validCount || remaining != 0 || options.Wait < 0 || autoAction != "" && (once || autoAction != "on" && autoAction != "off") || (aliasGiven || args[0] == "switch") && !accounts.ValidAlias(alias) {
 		fmt.Fprintln(stderr, "invalid arguments or alias; alias must match ^[a-z0-9][a-z0-9_-]{0,31}$")
@@ -176,7 +183,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return autoState(paths.State, autoAction, *jsonMode, stdout, stderr)
 	}
 	if args[0] == "priority" {
-		return priority(m, aliases, *jsonMode, stdout, stderr)
+		return priority(m, aliases, clearPriority, *jsonMode, stdout, stderr)
 	}
 	if args[0] == "pick" || args[0] == "auto" {
 		return pick(m, args[0] == "auto", *jsonMode, stdout, stderr)
