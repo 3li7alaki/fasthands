@@ -17,6 +17,7 @@ import (
 	"fasthands/internal/claudecfg"
 	"fasthands/internal/credstore"
 	"fasthands/internal/statehome"
+	"fasthands/internal/usage"
 )
 
 type Account struct {
@@ -170,6 +171,39 @@ func (m Manager) SetDisabled(alias string, disabled bool) error {
 			db.Accounts[id] = a
 			return m.write(db)
 		}
+	}
+	return fmt.Errorf("no account with alias %q", alias)
+}
+
+func (m Manager) Remove(alias string, loc claudecfg.Locations) error {
+	lock, err := m.lock()
+	if err != nil {
+		return err
+	}
+	defer unlock(lock)
+
+	db, err := m.read()
+	if err != nil {
+		return err
+	}
+	for id, a := range db.Accounts {
+		if a.Alias != alias {
+			continue
+		}
+		// ActiveUUID protects the configured login even when its credentials are unreadable.
+		liveID, _ := claudecfg.ActiveUUID(loc)
+		if id == liveID {
+			return fmt.Errorf("cannot remove the active account %q; switch to another account first", alias)
+		}
+		if err := m.Store.Delete(id); err != nil {
+			return err
+		}
+		// Match RefreshIdle's lock order: accounts.lock before usage.lock.
+		if err := (usage.Store{Directory: m.Paths.State}).Remove(id); err != nil {
+			return err
+		}
+		delete(db.Accounts, id)
+		return m.write(db)
 	}
 	return fmt.Errorf("no account with alias %q", alias)
 }

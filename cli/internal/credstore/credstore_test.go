@@ -113,6 +113,53 @@ func TestKeychainWriteFailureSanitized(t *testing.T) {
 	assertNoSecret(t, err.Error())
 }
 
+func TestKeychainDelete(t *testing.T) {
+	for _, code := range []string{"0", "44", "1"} {
+		t.Run(code, func(t *testing.T) {
+			k, dir := fakeSecurity(t, code)
+			err := k.Delete("account")
+			if (err != nil) != (code == "1") {
+				t.Fatal("only absent Keychain items may ignore deletion errors")
+			}
+			service := "fasthands-prev"
+			if err != nil {
+				service = "fasthands"
+				assertNoSecret(t, err.Error())
+			}
+			args, readErr := os.ReadFile(filepath.Join(dir, "argv"))
+			if readErr != nil || string(args) != "delete-generic-password\n-a\naccount\n-s\n"+service+"\n" {
+				t.Fatal("wrong Keychain deletion arguments")
+			}
+		})
+	}
+}
+
+func TestFileDelete(t *testing.T) {
+	for _, missing := range []string{"neither", "current", "previous", "both"} {
+		t.Run(missing, func(t *testing.T) {
+			f := Files{Directory: filepath.Join(t.TempDir(), "credentials")}
+			if missing != "current" && missing != "both" {
+				if err := f.Write("id", []byte(testBlob)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if missing != "previous" && missing != "both" {
+				if err := f.WritePrev("id", []byte(testBlob)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := f.Delete("id"); err != nil {
+				t.Fatal(err)
+			}
+			for _, suffix := range []string{".json", ".prev.json"} {
+				if _, err := os.Stat(filepath.Join(f.Directory, "id"+suffix)); !os.IsNotExist(err) {
+					t.Fatal("file deletion left a saved login")
+				}
+			}
+		})
+	}
+}
+
 func TestKeychainTimeoutAndMissingBinaryAreUnreadable(t *testing.T) {
 	old := securityTimeout
 	securityTimeout = 50 * time.Millisecond
@@ -153,6 +200,9 @@ func TestRejectUnsafeAccounts(t *testing.T) {
 		for _, backend := range []Backend{k, Files{Directory: filepath.Join(dir, "credentials")}} {
 			if err := backend.Write(account, []byte(testBlob)); err == nil {
 				t.Fatal("unsafe account accepted")
+			}
+			if err := backend.Delete(account); err == nil {
+				t.Fatal("unsafe account deletion accepted")
 			}
 		}
 	}

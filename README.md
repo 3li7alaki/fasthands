@@ -69,6 +69,7 @@ cannot break your status line.
 | `disable ALIAS` | Park an account without deleting its saved login. |
 | `enable ALIAS` | Make a parked account available for switching again. |
 | `rename OLD NEW` | Change an account alias without changing its saved login. |
+| `remove ALIAS` | Delete an account and both saved logins. Switch away from the active account first. |
 | `pick` | Show what the picker would do, and why. Changes nothing. |
 | `auto on\|off` | Pause or resume automatic switching. |
 | `auto --once` | Run the picker once and act on it. The status line hook does this for you. |

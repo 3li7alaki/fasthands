@@ -195,6 +195,10 @@ func (s Store) MarkSwitch(now int64) error {
 	return s.update(func(state *State) { state.LastSwitchAt = now })
 }
 
+func (s Store) Remove(id string) error {
+	return s.update(func(state *State) { delete(state.Accounts, id) })
+}
+
 func (s Store) update(change func(*State)) error {
 	lock, err := s.lock()
 	if err != nil {

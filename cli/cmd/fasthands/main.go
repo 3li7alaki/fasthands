@@ -22,7 +22,7 @@ import (
 	"fasthands/internal/version"
 )
 
-const usage = "usage: fasthands {add [--alias NAME] | ls | switch ALIAS [--wait DURATION] | refresh [ALIAS...] | priority [ALIAS... | --clear] | disable ALIAS | enable ALIAS | rename OLD NEW | pick | auto [on|off] | auto --once | status | hook statusline} [--json]\n       fasthands [--version] [--help] [--json]"
+const usage = "usage: fasthands {add [--alias NAME] | ls | switch ALIAS [--wait DURATION] | refresh [ALIAS...] | priority [ALIAS... | --clear] | disable ALIAS | enable ALIAS | rename OLD NEW | remove ALIAS | pick | auto [on|off] | auto --once | status | hook statusline} [--json]\n       fasthands [--version] [--help] [--json]"
 
 var platform = runtime.GOOS
 var securityPath = "/usr/bin/security"
@@ -55,7 +55,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	switch args[0] {
-	case "add", "ls", "switch", "status", "refresh", "priority", "disable", "enable", "rename", "pick", "auto":
+	case "add", "ls", "switch", "status", "refresh", "priority", "disable", "enable", "rename", "remove", "pick", "auto":
 	default:
 		fmt.Fprintln(stderr, usage)
 		return 2
@@ -84,7 +84,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	parseArgs := args[1:]
 	var aliases []string
 	switch args[0] {
-	case "refresh", "priority", "disable", "enable", "rename":
+	case "refresh", "priority", "disable", "enable", "rename", "remove":
 		parseArgs = nil
 		for i, arg := range args[1:] {
 			if arg == "--" {
@@ -129,7 +129,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	validCount := true
 	switch args[0] {
-	case "disable", "enable":
+	case "disable", "enable", "remove":
 		validCount = len(aliases) == 1
 	case "rename":
 		validCount = len(aliases) == 2
@@ -150,6 +150,22 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	m := accounts.Manager{Paths: paths, Store: credstore.New(platform, securityPath, paths.Credentials)}
+	if args[0] == "remove" {
+		// An unavailable live identity leaves no account to protect.
+		loc, _ := claudecfg.Locate()
+		if err := m.Remove(aliases[0], loc); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		if *jsonMode {
+			return outputJSON(stdout, stderr, struct {
+				Alias   string `json:"alias"`
+				Removed bool   `json:"removed"`
+			}{aliases[0], true})
+		}
+		fmt.Fprintf(stdout, "removed %s\n", aliases[0])
+		return 0
+	}
 	if args[0] == "disable" || args[0] == "enable" {
 		disabled := args[0] == "disable"
 		if err := m.SetDisabled(aliases[0], disabled); err != nil {

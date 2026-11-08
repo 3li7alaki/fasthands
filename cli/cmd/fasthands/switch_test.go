@@ -43,6 +43,7 @@ func setupSwitchCommand(t *testing.T, targetPlatform string) commandSwitchFixtur
 		t.Setenv("FH_KEYCHAIN", f.keychain)
 		t.Setenv("FH_FAIL_READ", "")
 		t.Setenv("FH_FAIL_WRITE", "")
+		t.Setenv("FH_FAIL_DELETE", "")
 		writeFixture(t, filepath.Join(f.keychain, "error"), activeBlob)
 		script, err := os.ReadFile("../../internal/credstore/testdata/security")
 		if err != nil {

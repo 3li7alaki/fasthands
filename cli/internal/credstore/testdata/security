@@ -28,6 +28,15 @@ if [ "$operation" = find-generic-password ]; then
     awk '{ for (i=1;i<=length($0);i+=2) printf "%c", (index("0123456789abcdef",substr($0,i,1))-1)*16+index("0123456789abcdef",substr($0,i+1,1))-1 }' "$path"
     exit 0
 fi
+if [ "$operation" = delete-generic-password ]; then
+    if [ "$FH_FAIL_DELETE" = "$item" ]; then
+        cat "$FH_KEYCHAIN/error" >&2
+        exit 1
+    fi
+    [ -f "$path" ] || exit 44
+    rm "$path"
+    exit $?
+fi
 if [ "$operation" != add-generic-password ]; then
     exit 1
 fi

@@ -27,6 +27,7 @@ type Backend interface {
 	Read(account string) ([]byte, error)
 	Write(account string, blob []byte) error
 	WritePrev(account string, blob []byte) error
+	Delete(account string) error
 }
 
 func New(platform, securityPath, directory string) Backend {
@@ -67,6 +68,19 @@ func (f Files) Write(account string, blob []byte) error {
 
 func (f Files) WritePrev(account string, blob []byte) error {
 	return f.write(account, ".prev.json", blob)
+}
+
+func (f Files) Delete(account string) error {
+	if !ValidAccount(account) {
+		return errors.New("invalid accountUuid for credential storage")
+	}
+	for _, suffix := range []string{".json", ".prev.json"} {
+		path := filepath.Join(f.Directory, account+suffix)
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("cannot delete credentials at %q", path)
+		}
+	}
+	return nil
 }
 
 func (f Files) write(account, suffix string, blob []byte) error {
@@ -119,6 +133,23 @@ func (k Keychain) Write(account string, blob []byte) error {
 
 func (k Keychain) WritePrev(account string, blob []byte) error {
 	return k.writeBackup(account, "fasthands-prev", blob)
+}
+
+func (k Keychain) Delete(account string) error {
+	if !ValidAccount(account) {
+		return errors.New("invalid accountUuid for credential storage")
+	}
+	for _, service := range []string{"fasthands", "fasthands-prev"} {
+		cmd, cancel := k.command("delete-generic-password", "-a", account, "-s", service)
+		cmd.Stdout = io.Discard
+		err := cmd.Run()
+		cancel()
+		var exit *exec.ExitError
+		if err != nil && !(errors.As(err, &exit) && exit.ExitCode() == 44) {
+			return fmt.Errorf("cannot delete Keychain service %q", service)
+		}
+	}
+	return nil
 }
 
 func (k Keychain) writeBackup(account, service string, blob []byte) error {

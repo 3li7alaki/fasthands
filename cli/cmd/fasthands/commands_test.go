@@ -15,6 +15,8 @@ import (
 
 	"fasthands/internal/accounts"
 	"fasthands/internal/claudecfg"
+	"fasthands/internal/credstore"
+	usageState "fasthands/internal/usage"
 )
 
 const activeBlob = `{"claudeAiOauth":{"accessToken":"cli-access-private","refreshToken":"cli-refresh-private"},"trustedDeviceToken":"device-private","unknown":{"keep":true},"mcpOAuth":{"shared":true},"mcpOAuthClientConfig":{},"mcpXaaIdp":{},"mcpXaaIdpConfig":{},"pluginSecrets":{}}`
@@ -185,6 +187,157 @@ func TestRenameCommand(t *testing.T) {
 	}
 }
 
+func TestRemoveCommand(t *testing.T) {
+	for _, targetPlatform := range []string{"linux", "darwin"} {
+		for _, mode := range []string{"human", "json", "json-first"} {
+			t.Run(targetPlatform+"/"+mode, func(t *testing.T) {
+				f := setupSwitchCommand(t, targetPlatform)
+				store := credstore.New(platform, securityPath, filepath.Join(f.fast, "credentials"))
+				if err := store.WritePrev("second-id", []byte(secondBlob)); err != nil {
+					t.Fatal(err)
+				}
+				cache := usageState.Store{Directory: filepath.Join(f.fast, "state")}
+				for _, id := range []string{"12345678-1234-1234-1234-123456789abc", "second-id"} {
+					if err := cache.SaveRefresh(id, "fingerprint", 123); err != nil {
+						t.Fatal(err)
+					}
+				}
+				before, err := cache.Read()
+				if err != nil {
+					t.Fatal(err)
+				}
+				delete(before.Accounts, "second-id")
+				config, live := snapshot(t, f.loc.GlobalConfig), snapshot(t, f.loc.CredentialsFile)
+				args, want := []string{"remove", "b"}, "removed b\n"
+				if mode != "human" {
+					args, want = []string{"remove", "b", "--json"}, "{\"alias\":\"b\",\"removed\":true}\n"
+				}
+				if mode == "json-first" {
+					args = []string{"remove", "--json", "b"}
+				}
+				if code, out, stderr := invoke(args...); code != 0 || out != want || stderr != "" {
+					t.Fatalf("remove failed: %d %q %q", code, out, stderr)
+				}
+				code, out, stderr := invoke("ls", "--json")
+				var listed struct {
+					Accounts []accounts.Listed `json:"accounts"`
+				}
+				if code != 0 || stderr != "" || json.Unmarshal([]byte(out), &listed) != nil || len(listed.Accounts) != 1 || listed.Accounts[0].Alias != "a" {
+					t.Fatal("removed account still listed or another account lost")
+				}
+				for _, suffix := range []string{".json", ".prev.json"} {
+					path := filepath.Join(f.fast, "credentials", "second-id"+suffix)
+					if platform == "darwin" {
+						service := "fasthands"
+						if suffix == ".prev.json" {
+							service = "fasthands-prev"
+						}
+						path = filepath.Join(f.keychain, service, "second-id")
+					}
+					if _, err := os.Stat(path); !os.IsNotExist(err) {
+						t.Fatal("removed account still has a saved login")
+					}
+				}
+				after, err := cache.Read()
+				if err != nil || !reflect.DeepEqual(before, after) {
+					t.Fatal("remove did not drop only the account's usage state")
+				}
+				if !reflect.DeepEqual(config, snapshot(t, f.loc.GlobalConfig)) || !reflect.DeepEqual(live, snapshot(t, f.loc.CredentialsFile)) {
+					t.Fatal("remove changed the active login")
+				}
+				blob, err := store.Read("12345678-1234-1234-1234-123456789abc")
+				if err != nil || !bytes.Contains(blob, []byte("cli-access-private")) {
+					t.Fatal("remove changed another account's saved login")
+				}
+			})
+		}
+	}
+}
+
+func TestRemoveRefusalsChangeNothing(t *testing.T) {
+	for _, targetPlatform := range []string{"linux", "darwin"} {
+		for _, alias := range []string{"missing", "a"} {
+			t.Run(targetPlatform+"/"+alias, func(t *testing.T) {
+				f := setupSwitchCommand(t, targetPlatform)
+				// The configured active identity stays protected even without readable credentials.
+				writeFixture(t, f.loc.CredentialsFile, "unreadable")
+				t.Setenv("FH_FAIL_READ", f.loc.Service+"/"+f.loc.KeychainAccount)
+				before, claude := snapshot(t, f.fast), snapshot(t, f.home)
+				want := "no account with alias \"missing\"\n"
+				if alias == "a" {
+					want = "cannot remove the active account \"a\"; switch to another account first\n"
+				}
+				code, out, stderr := invoke("remove", alias, "--json")
+				if code != 1 || out != "" || stderr != want || !reflect.DeepEqual(before, snapshot(t, f.fast)) || !reflect.DeepEqual(claude, snapshot(t, f.home)) {
+					t.Fatal("remove refusal changed storage or returned wrong error")
+				}
+			})
+		}
+	}
+}
+
+func TestRemoveWithoutLiveIdentity(t *testing.T) {
+	for _, identity := range []string{"missing", "malformed", "no-account"} {
+		t.Run(identity, func(t *testing.T) {
+			f := setupSwitchCommand(t, "linux")
+			if identity == "missing" {
+				if err := os.Remove(f.loc.GlobalConfig); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				data := "invalid"
+				if identity == "no-account" {
+					data = `{}`
+				}
+				writeFixture(t, f.loc.GlobalConfig, data)
+			}
+			if code, out, stderr := invoke("remove", "a"); code != 0 || out != "removed a\n" || stderr != "" {
+				t.Fatal("unreadable live identity must permit removal")
+			}
+		})
+	}
+}
+
+func TestRemoveDeletionFailureKeepsMetadata(t *testing.T) {
+	for _, targetPlatform := range []string{"linux", "darwin"} {
+		for _, previous := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/previous=%t", targetPlatform, previous), func(t *testing.T) {
+				f := setupSwitchCommand(t, targetPlatform)
+				store := credstore.New(platform, securityPath, filepath.Join(f.fast, "credentials"))
+				if err := store.WritePrev("second-id", []byte(secondBlob)); err != nil {
+					t.Fatal(err)
+				}
+				if targetPlatform == "darwin" {
+					service := "fasthands"
+					if previous {
+						service = "fasthands-prev"
+					}
+					t.Setenv("FH_FAIL_DELETE", service+"/second-id")
+				} else {
+					suffix := ".json"
+					if previous {
+						suffix = ".prev.json"
+					}
+					path := filepath.Join(f.fast, "credentials", "second-id"+suffix)
+					if err := os.Remove(path); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.Mkdir(path, 0700); err != nil {
+						t.Fatal(err)
+					}
+					writeFixture(t, filepath.Join(path, "occupied"), "keep")
+				}
+				before := snapshot(t, filepath.Join(f.fast, "state"))
+				code, out, stderr := invoke("remove", "b", "--json")
+				if code != 1 || out != "" || !strings.Contains(stderr, "cannot delete") || !reflect.DeepEqual(before, snapshot(t, filepath.Join(f.fast, "state"))) {
+					t.Fatal("failed credential deletion removed metadata or usage state")
+				}
+				assertOutputPrivate(t, stderr)
+			})
+		}
+	}
+}
+
 func TestAddReadsSeparateStorage(t *testing.T) {
 	home, fast := setupActive(t)
 	storage := t.TempDir()
@@ -209,13 +362,14 @@ func TestCommandUsageAndHelp(t *testing.T) {
 		{"ls", "--alias", "name"}, {"ls", "extra"}, {"add", "--json=invalid"},
 		{"disable"}, {"disable", "a", "b"}, {"enable"}, {"enable", "a", "b"},
 		{"rename"}, {"rename", "a"}, {"rename", "a", "b", "c"},
+		{"remove"}, {"remove", "a", "b"},
 	} {
 		code, out, err := invoke(args...)
 		if code != 2 || out != "" || err == "" {
 			t.Fatalf("invalid arguments must return usage exit 2: %v", args)
 		}
 	}
-	for _, args := range [][]string{{"help"}, {"add", "--help"}, {"ls", "-h"}, {"disable", "--help"}, {"enable", "--help"}, {"rename", "--help"}} {
+	for _, args := range [][]string{{"help"}, {"add", "--help"}, {"ls", "-h"}, {"disable", "--help"}, {"enable", "--help"}, {"rename", "--help"}, {"remove", "--help"}} {
 		code, out, err := invoke(args...)
 		if code != 0 || out == "" || err != "" {
 			t.Fatalf("help must use stdout and exit 0: %v", args)
